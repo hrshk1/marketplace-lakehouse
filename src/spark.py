@@ -7,6 +7,8 @@ session default, so SQL throughout the project uses two-part names such as
 
 from __future__ import annotations
 
+import logging
+
 from pyspark.sql import SparkSession
 
 from marketplace.config import Settings
@@ -89,4 +91,6 @@ def build_spark(settings: Settings, app_name: str = "marketplace-lakehouse") -> 
         builder = builder.config(key, value)
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
+    # py4j logs every gateway call at INFO, which drowns the pipeline's own logs.
+    logging.getLogger("py4j").setLevel(logging.WARNING)
     return spark
