@@ -2,7 +2,8 @@
 
 Each method damages freshly generated rows in one specific way and returns a
 `Defect` per damaged record for the ledger. The injector draws from its own
-random stream, so changing the defect rate never changes the healthy data.
+random stream, so the random choices that shape healthy rows do not depend
+on the defect rate.
 """
 
 from __future__ import annotations
