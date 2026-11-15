@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import psycopg
+from psycopg import sql
 from pyspark.sql import SparkSession
 
 from marketplace.batch import Batch
@@ -21,7 +22,7 @@ from marketplace.dq.loader import load_layer_checks
 from marketplace.dq.model import PASSED, CheckResult
 from marketplace.dq.runner import enforce, run_checks
 from marketplace.gold.models import GOLD_MODELS
-from marketplace.lake import ensure_namespaces
+from marketplace.lake import NAMESPACES, ensure_namespaces
 from marketplace.ops.maintenance import MaintenanceResult, list_tables, maintain_table
 from marketplace.ops.runs import record_failure, track_step
 from marketplace.publish.export import export_path, export_table
@@ -75,6 +76,25 @@ def open_context(settings: Settings | None = None) -> PipelineContext:
     return PipelineContext(
         spark, settings, PostgresMongoReader(spark, settings), settings.dw_conninfo
     )
+
+
+def reset_lakehouse(ctx: PipelineContext) -> None:
+    """Drop every lakehouse table and the serving schema.
+
+    Used when the sources are re-seeded: data loaded from the previous sources
+    would otherwise be mixed with rows from the new ones.
+    """
+    for table in list_tables(ctx.spark):
+        ctx.spark.sql(f"DROP TABLE {table} PURGE")
+    for namespace in NAMESPACES:
+        ctx.spark.sql(f"DROP NAMESPACE IF EXISTS {namespace}")
+    ensure_namespaces(ctx.spark)
+    if ctx.dw_conninfo:
+        schema = load_publish_config(ctx.settings.config_dir).schema
+        with psycopg.connect(ctx.dw_conninfo) as connection:
+            connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
+            )
 
 
 def extract_to_bronze(ctx: PipelineContext, batch: Batch, table_name: str) -> ExtractResult:

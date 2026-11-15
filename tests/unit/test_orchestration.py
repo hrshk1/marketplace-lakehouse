@@ -83,6 +83,35 @@ def test_failure_callback_uses_run_after_when_there_is_no_logical_date(lake, set
     ]
 
 
+@pytest.mark.parametrize(
+    ("entry_point", "arguments", "pipeline_function", "expected_argument"),
+    [
+        ("extract_table", {"table_name": "orders"}, "extract_to_bronze", "orders"),
+        ("build_silver_table", {"table_name": "orders"}, "build_silver", "orders"),
+        ("build_gold_model", {"model_name": "dim_customer"}, "build_gold", "dim_customer"),
+        ("quality_gate", {"layer": "silver"}, "quality_gate", "silver"),
+        ("publish_analytics_tables", {}, "publish", "analytics"),
+        ("publish_operational_tables", {}, "publish", "operations"),
+        ("maintain_tables", {}, "maintain", None),
+    ],
+)
+def test_each_task_entry_point_runs_its_pipeline_step_for_the_batch(
+    monkeypatch, entry_point, arguments, pipeline_function, expected_argument
+):
+    calls = []
+    monkeypatch.setattr(pipeline, "open_context", lambda: "context")
+    monkeypatch.setattr(
+        pipeline, pipeline_function, lambda ctx, batch, *args: calls.append((ctx, batch, args))
+    )
+
+    getattr(orchestration, entry_point)(**arguments, batch_date="2026-07-01", run_id="run-7")
+
+    ((context, batch, args),) = calls
+    assert context == "context"
+    assert (batch.batch_id, batch.run_id) == ("2026-07-01", "run-7")
+    assert args == (() if expected_argument is None else (expected_argument,))
+
+
 def load_dag(file_name: str):
     pytest.importorskip("airflow")
     spec = importlib.util.spec_from_file_location(

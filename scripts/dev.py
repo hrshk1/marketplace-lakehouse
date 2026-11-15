@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = ROOT / "reports"
 DAG_ID = "daily_marketplace_pipeline"
 AIRFLOW_RUN_TIMEOUT_SECONDS = 3600
+DEMO_INCREMENTAL_DAYS = 3
 LOCAL_STATE_DIRS = ("data", "reports")
 
 
@@ -155,14 +156,18 @@ def cmd_demo(args: argparse.Namespace) -> None:
     step("start services", cmd_up, args)
     step("seed sources (day 0)", pipeline_cli, "seed", "--profile", profile)
     step("pipeline: initial full load", pipeline_cli, "run")
-    step("simulate 3 more days", pipeline_cli, "advance", "--days", "3")
-    step("pipeline: 3 incremental days", pipeline_cli, "run")
+    # One day at a time, as in production: the pipeline runs right after each
+    # day closes, so it sees every change before the source overwrites it.
+    for day in range(1, DEMO_INCREMENTAL_DAYS + 1):
+        step(f"simulate day {day}", pipeline_cli, "advance", "--days", "1")
+        step(f"pipeline: incremental day {day}", pipeline_cli, "run")
     step("data quality and defect report", pipeline_cli, "dq")
-    step("simulate 1 more day", pipeline_cli, "advance", "--days", "1")
 
+    airflow_day = DEMO_INCREMENTAL_DAYS + 1
+    step(f"simulate day {airflow_day}", pipeline_cli, "advance", "--days", "1")
     status = json.loads(pipeline_cli("status", "--json", capture=True).strip().splitlines()[-1])
     airflow_date = date.fromisoformat(status["latest_simulated_date"])
-    step("pipeline: 1 day through Airflow", trigger_airflow_run, airflow_date)
+    step(f"pipeline: day {airflow_day} through Airflow", trigger_airflow_run, airflow_date)
     step("iceberg maintenance", pipeline_cli, "maintain")
     step("provision Metabase", pipeline_cli, "provision-bi")
 
@@ -177,7 +182,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
     print("\n=== demo finished ===")
     for name, seconds in timings.items():
-        print(f"{name:<36} {timedelta(seconds=round(seconds))}")
+        print(f"{name:<40} {timedelta(seconds=round(seconds))}")
     print(
         "\nAirflow   http://localhost:8080"
         "\nMetabase  http://localhost:3000  (login is in .env: METABASE_ADMIN_*)"

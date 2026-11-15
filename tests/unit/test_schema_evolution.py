@@ -11,7 +11,7 @@ from marketplace.bronze.extract import extract_table
 from marketplace.bronze.schema_evolution import SchemaDriftError, diff_schemas
 from marketplace.generator.stores import MemoryStore
 from marketplace.sources.readers import MemoryReader, source_table
-from tests.helpers import batch, customer_row, ts
+from tests.helpers import batch, customer_row, order_item_row, ts
 
 pytestmark = pytest.mark.spark
 
@@ -106,3 +106,46 @@ def test_removed_column_fails_loudly_and_loads_nothing(lake, loaded):
     assert schema_changes(lake) == [
         ("customers", "phone", "column_removed", None, None, "2026-07-01")
     ]
+
+
+def test_runbook_dropping_the_bronze_column_unblocks_a_removed_source_column(lake, loaded):
+    store, reader = loaded
+    del store.columns["customers"]["phone"]
+    store.insert("customers", [customer_row(2, ts("2026-07-01 09:00"))])
+    with pytest.raises(SchemaDriftError):
+        extract_table(lake, reader, CUSTOMERS, batch("2026-07-01"), LOOKBACK)
+
+    lake.sql("ALTER TABLE bronze.customers DROP COLUMN phone")
+    result = extract_table(lake, reader, CUSTOMERS, batch("2026-07-01"), LOOKBACK)
+
+    # The quarantined attempt did not move the watermark, so nothing was skipped.
+    assert result.rows_extracted == 1
+    assert lake.table("bronze.customers").count() == 2
+    assert "phone" not in lake.table("bronze.customers").columns
+    status = lake.sql(
+        "SELECT status FROM ops.extract_checkpoints WHERE batch_id = '2026-07-01'"
+    ).collect()[0][0]
+    assert status == "committed"
+
+
+def test_runbook_widening_the_bronze_column_unblocks_a_widened_source_type(lake):
+    items = source_table("order_items")
+    store = MemoryStore()
+    store.insert("order_items", [order_item_row(1, 1, ts("2026-06-30 10:00"))])
+    reader = MemoryReader(lake, store)
+    extract_table(lake, reader, items, batch("2026-06-30"), LOOKBACK)
+    store.columns["order_items"]["quantity"] = "bigint"
+    store.insert(
+        "order_items", [order_item_row(2, 1, ts("2026-07-01 09:00"), quantity=3_000_000_000)]
+    )
+    with pytest.raises(SchemaDriftError, match="type of quantity changed int -> bigint"):
+        extract_table(lake, reader, items, batch("2026-07-01"), LOOKBACK)
+
+    lake.sql("ALTER TABLE bronze.order_items ALTER COLUMN quantity TYPE bigint")
+    extract_table(lake, reader, items, batch("2026-07-01"), LOOKBACK)
+
+    quantities = [
+        row.quantity
+        for row in lake.sql("SELECT quantity FROM bronze.order_items ORDER BY 1").collect()
+    ]
+    assert quantities == [1, 3_000_000_000]

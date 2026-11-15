@@ -1,7 +1,7 @@
 name: marketplace-lakehouse
 
 # Memory limits are sized for Docker Desktop with about 8 GB. The always-on
-# services add up to roughly 6.9 GB of limits; real usage is lower because the
+# services add up to roughly 7.4 GB of limits; real usage is lower because the
 # Airflow scheduler only grows when a Spark task is running. The `tools`
 # container is started on demand by scripts/dev.py and exits when it is done.
 
@@ -178,7 +178,7 @@ services:
       timeout: 10s
       retries: 40
       start_period: 60s
-    mem_limit: 1280m
+    mem_limit: 1536m
 
   tools:
     <<: *pipeline
@@ -188,6 +188,7 @@ services:
       TEST_PG_DSN: >-
         host=postgres-platform port=5432 dbname=warehouse_test
         user=${PLATFORM_PG_USER} password=${PLATFORM_PG_PASSWORD}
+      TEST_MONGO_URI: mongodb://mongo:27017
     depends_on:
       postgres-source:
         condition: service_healthy

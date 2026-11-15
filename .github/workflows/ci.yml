@@ -33,8 +33,13 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      mongo:
+        image: mongo:7.0.48
+        ports:
+          - 27017:27017
     env:
       TEST_PG_DSN: host=localhost port=5432 dbname=warehouse_test user=platform password=platform_ci
+      TEST_MONGO_URI: mongodb://localhost:27017
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

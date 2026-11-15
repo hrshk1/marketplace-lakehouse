@@ -30,7 +30,14 @@ from marketplace.generator.simulator import MarketplaceSimulator
 from marketplace.generator.stores import PostgresMongoStore
 from marketplace.logging_setup import configure_logging
 from marketplace.ops.status import PipelineStatus, pipeline_status
-from marketplace.pipeline import PipelineContext, check_layer, maintain, open_context, run_batch
+from marketplace.pipeline import (
+    PipelineContext,
+    check_layer,
+    maintain,
+    open_context,
+    reset_lakehouse,
+    run_batch,
+)
 
 
 def _status(ctx: PipelineContext) -> PipelineStatus:
@@ -45,8 +52,10 @@ def cmd_seed(args: argparse.Namespace, settings: Settings) -> None:
     config = GeneratorConfig.from_settings(settings, PROFILES[args.profile])
     with PostgresMongoStore(settings) as store, Ledger(settings.ledger_path) as ledger:
         summary = MarketplaceSimulator(store, ledger, config).seed()
+    reset_lakehouse(open_context(settings))
     print(f"Seeded day 0 ({config.start_date}): {dict(summary.inserted)}")
     print(f"Injected defects: {dict(summary.defects)}")
+    print("Cleared the lakehouse and the dw schema, which held data from the previous sources.")
 
 
 def cmd_advance(args: argparse.Namespace, settings: Settings) -> None:
@@ -103,7 +112,7 @@ def cmd_dq(args: argparse.Namespace, settings: Settings) -> None:
     with Ledger(settings.ledger_path) as ledger:
         injected = ledger.keys_by_type(through_day=processed_days)
     scores = score_detection(ctx.spark, injected, load_detectors(settings.config_dir))
-    write_report(scores, settings.project_root / "reports")
+    write_report(scores, settings.reports_dir)
     print("\nInjected defects versus detection (generator ledger is the answer key)\n")
     print(render_markdown(scores))
 

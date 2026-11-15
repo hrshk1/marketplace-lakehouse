@@ -26,6 +26,7 @@ class Settings:
     """All configuration for the generator, the pipeline and the BI provisioning."""
 
     project_root: Path
+    reports_dir: Path
 
     oltp_pg_host: str
     oltp_pg_port: int
@@ -75,6 +76,7 @@ class Settings:
         data_dir = root / "data"
         return cls(
             project_root=root,
+            reports_dir=Path(_env("REPORTS_DIR", str(root / "reports"))),
             oltp_pg_host=_env("OLTP_PG_HOST", "localhost"),
             oltp_pg_port=int(_env("OLTP_PG_PORT", "5432")),
             oltp_pg_db=_env("OLTP_PG_DB", "marketplace"),

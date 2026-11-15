@@ -67,6 +67,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "spark: needs a local Spark session (JDK 17 and the pinned jars)",
     "postgres: needs a reachable PostgreSQL instance (see TEST_PG_DSN)",
+    "mongodb: needs a reachable MongoDB instance (see TEST_MONGO_URI)",
     "airflow: needs Apache Airflow installed",
 ]
 filterwarnings = ["ignore::DeprecationWarning:pyspark.*"]
