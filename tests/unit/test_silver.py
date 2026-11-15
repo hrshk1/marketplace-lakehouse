@@ -83,6 +83,7 @@ def test_rule_breakers_are_quarantined_with_reason_and_original_payload(lake):
     payload = json.loads(rejected[0].payload)
     assert payload["pincode"] == "4110"
     assert payload["_source_system"] == "postgres"
+    assert "_ingested_at" not in payload
 
 
 def test_newer_version_replaces_the_row_and_older_late_version_does_not(lake):

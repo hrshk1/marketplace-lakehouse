@@ -33,17 +33,23 @@ class SilverResult:
 
 
 def _latest_versions(spark: SparkSession, spec: SilverTable, batch: Batch) -> DataFrame:
-    """The newest Bronze version of each row in this batch, with its raw payload."""
+    """The newest Bronze version of each row in this batch, with its raw payload.
+
+    The payload leaves out `_ingested_at`, the one column that differs between
+    two loads of the same batch, so a re-run quarantines byte-identical rows.
+    """
+    source = bronze_table(spec.name)
+    payload_columns = ", ".join(c for c in spark.table(source).columns if c != "_ingested_at")
     ranked = spark.sql(
         f"""
         SELECT *,
                CAST({spec.source_key} AS STRING) AS _record_key,
-               to_json(struct(*)) AS _payload,
+               to_json(struct({payload_columns})) AS _payload,
                row_number() OVER (
                    PARTITION BY {spec.source_key}
                    ORDER BY updated_at DESC, _ingested_at DESC
                ) AS _version_rank
-        FROM {bronze_table(spec.name)}
+        FROM {source}
         WHERE _batch_id = '{batch.batch_id}'
         """
     )
@@ -81,14 +87,15 @@ def _merge_accepted(spark: SparkSession, spec: SilverTable, accepted: DataFrame)
     if not table_exists(spark, spec.target):
         create_table(accepted, spec.target)
     accepted.createOrReplaceTempView("silver_accepted")
-    # `>=` rather than `>` so a re-run of the same batch rewrites identical
-    # values, while an older version arriving late never overwrites a newer one.
+    # Strictly newer only. An older version arriving late never overwrites a
+    # newer one, and a version seen again (a re-run, or the lookback window
+    # re-reading it) leaves the row and its `_batch_id` untouched.
     spark.sql(
         f"""
         MERGE INTO {spec.target} AS target
         USING silver_accepted AS source
         ON target.{spec.key} = source.{spec.key}
-        WHEN MATCHED AND source.updated_at >= target.updated_at THEN UPDATE SET *
+        WHEN MATCHED AND source.updated_at > target.updated_at THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """
     )
