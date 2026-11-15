@@ -80,7 +80,7 @@ def extract_table(
     incoming.writeTo(target).overwrite(F.col("_batch_id") == batch.batch_id)
 
     rows_extracted = spark.table(target).where(F.col("_batch_id") == batch.batch_id).count()
-    source_row_count = reader.count_until(table, window.high_watermark)
+    source_row_count = reader.count_window(table, window.read_from, window.high_watermark)
     checkpoints.record(
         spark,
         table.name,

@@ -66,8 +66,10 @@ def _state(column: str) -> str:
 
 def _address_joins(city_column: str, state_column: str) -> str:
     return f"""
-        LEFT JOIN {CITY_ALIAS_VIEW} AS city_alias ON city_alias.alias = lower(trim(b.{city_column}))
-        LEFT JOIN {STATE_CODE_VIEW} AS state_code ON state_code.alias = lower(trim(b.{state_column}))
+        LEFT JOIN {CITY_ALIAS_VIEW} AS city_alias
+               ON city_alias.alias = lower(trim(b.{city_column}))
+        LEFT JOIN {STATE_CODE_VIEW} AS state_code
+               ON state_code.alias = lower(trim(b.{state_column}))
     """
 
 

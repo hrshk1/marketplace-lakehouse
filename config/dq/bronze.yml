@@ -1,0 +1,145 @@
+# Bronze checks look only at the rows of the current batch. Bronze is raw, so
+# checks that describe source problems are warnings: they are recorded and
+# surfaced, and Silver decides what to do with the rows. Errors are reserved
+# for things that mean the load itself is broken.
+#
+# threshold: for row checks, the largest tolerated share of failing rows;
+# for freshness, the largest lag in hours; for reconciliation, the largest
+# relative difference.
+layer: bronze
+
+common_checks:
+  - id: brz_{table}_pk_not_null
+    type: not_null
+    column: "{key}"
+    severity: error
+    threshold: 0
+    why: A row without its key cannot be deduplicated or merged downstream.
+  - id: brz_{table}_source_reconciliation
+    type: row_count_reconciliation
+    severity: error
+    threshold: 0
+    why: >-
+      Every row the source returned for the extraction window (counted with a separate
+      query) must have landed in the batch, exactly once.
+    left_sql: >-
+      SELECT source_row_count FROM ops.extract_checkpoints
+      WHERE table_name = '{table}' AND batch_id = '{batch_id}'
+    right_sql: SELECT count(*) FROM bronze.{table} WHERE _batch_id = '{batch_id}'
+
+tables:
+  orders:
+    key: order_id
+    filter: "_batch_id = '{batch_id}'"
+    checks:
+      - id: brz_orders_customer_id_not_null
+        type: not_null
+        column: customer_id
+        severity: warn
+        threshold: 0
+        why: Guest-checkout bug in the source; such orders map to the unknown customer in Gold.
+      - id: brz_orders_status_accepted
+        type: accepted_values
+        column: order_status
+        values: [placed, paid, packed, shipped, delivered, cancelled, returned]
+        severity: warn
+        threshold: 0
+        why: A new status means the order lifecycle changed and Gold logic needs a review.
+      - id: brz_orders_late_arriving
+        type: custom_sql
+        severity: warn
+        threshold: 0
+        why: >-
+          Rows whose updated_at is older than the previous watermark were committed late in
+          the source. The lookback window saved them; a growing count means it is too short.
+        sql: |
+          SELECT CAST(b.order_id AS STRING) AS record_key
+          FROM bronze.orders AS b
+          JOIN ops.extract_checkpoints AS c
+            ON c.table_name = 'orders' AND c.batch_id = b._batch_id
+          WHERE b._batch_id = '{batch_id}'
+            AND b.updated_at < c.low_watermark
+            AND NOT EXISTS (
+                SELECT 1
+                FROM bronze.orders AS earlier
+                WHERE earlier.order_id = b.order_id
+                  AND earlier.updated_at = b.updated_at
+                  AND earlier._batch_id < b._batch_id
+            )
+      - id: brz_orders_freshness
+        type: freshness
+        column: updated_at
+        severity: warn
+        threshold: 24
+        why: No order activity for a full day almost always means extraction is broken.
+
+  order_items:
+    key: order_item_id
+    filter: "_batch_id = '{batch_id}'"
+    checks:
+      - id: brz_order_items_order_exists
+        type: relationships
+        column: order_id
+        to_table: bronze.orders
+        to_column: order_id
+        severity: warn
+        threshold: 0
+        why: The source has no foreign key here, so items can point at orders that never existed.
+      - id: brz_order_items_quantity_positive
+        type: range
+        column: quantity
+        min: 1
+        severity: warn
+        threshold: 0
+        why: Zero or negative quantities would distort units and revenue.
+
+  payments:
+    key: payment_id
+    filter: "_batch_id = '{batch_id}'"
+    checks:
+      - id: brz_payments_amount_positive
+        type: range
+        column: amount
+        min: 0.01
+        severity: warn
+        threshold: 0
+        why: The source has no CHECK constraint on amount; non-positive amounts are gateway errors.
+      - id: brz_payments_method_accepted
+        type: accepted_values
+        column: payment_method
+        values: [UPI, CARD, NET_BANKING, COD, WALLET]
+        severity: warn
+        threshold: 0
+        why: A new payment method must be added to dim_payment_method before it is reported on.
+
+  customers:
+    key: customer_id
+    filter: "_batch_id = '{batch_id}'"
+    checks:
+      - id: brz_customers_pincode_format
+        type: regex
+        column: pincode
+        pattern: '^\s*[1-9][0-9]{5}\s*$'
+        severity: warn
+        threshold: 0
+        why: Pincode feeds the SCD2 customer dimension; malformed values are rejected in Silver.
+
+  products:
+    key: product_id
+    filter: "_batch_id = '{batch_id}'"
+
+  sellers:
+    key: seller_id
+    filter: "_batch_id = '{batch_id}'"
+
+  categories:
+    key: category_id
+    filter: "_batch_id = '{batch_id}'"
+
+  reviews:
+    key: doc_id
+    filter: "_batch_id = '{batch_id}'"
+
+  product_attributes:
+    key: doc_id
+    filter: "_batch_id = '{batch_id}'"

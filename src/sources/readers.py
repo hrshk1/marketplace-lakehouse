@@ -59,8 +59,8 @@ class SourceReader(Protocol):
     def read_window(self, table: SourceTable, start: datetime | None, end: datetime) -> DataFrame:
         """Rows with `start <= updated_at < end`; `start=None` means from the beginning."""
 
-    def count_until(self, table: SourceTable, end: datetime) -> int:
-        """Number of source rows with `updated_at < end`, for reconciliation."""
+    def count_window(self, table: SourceTable, start: datetime | None, end: datetime) -> int:
+        """Count the rows of the same window with a separate query, for reconciliation."""
 
 
 def _json_default(value: object) -> str:
@@ -103,13 +103,13 @@ class PostgresMongoReader:
             return self._spark.createDataFrame(rows, schema=DOCUMENT_SCHEMA)
         return self._jdbc(f"SELECT * FROM oltp.{table.name} WHERE {self._sql_filter(start, end)}")
 
-    def count_until(self, table: SourceTable, end: datetime) -> int:
+    def count_window(self, table: SourceTable, start: datetime | None, end: datetime) -> int:
         if table.system == MONGODB:
             with self._mongo() as client:
                 return client[self._settings.mongo_db][table.name].count_documents(
-                    {WATERMARK_COLUMN: self._mongo_filter(None, end)}
+                    {WATERMARK_COLUMN: self._mongo_filter(start, end)}
                 )
-        query = f"SELECT count(*) AS n FROM oltp.{table.name} WHERE {self._sql_filter(None, end)}"
+        query = f"SELECT count(*) AS n FROM oltp.{table.name} WHERE {self._sql_filter(start, end)}"
         return self._jdbc(query).collect()[0]["n"]
 
     def _mongo(self) -> MongoClient:
@@ -163,7 +163,9 @@ class MemoryReader:
             [tuple(row.get(name) for name in columns) for row in rows], schema=schema
         )
 
-    def count_until(self, table: SourceTable, end: datetime) -> int:
+    def count_window(self, table: SourceTable, start: datetime | None, end: datetime) -> int:
         return sum(
-            1 for row in self._store.tables[table.name].values() if row[WATERMARK_COLUMN] < end
+            1
+            for row in self._store.tables[table.name].values()
+            if _in_window(row[WATERMARK_COLUMN], start, end)
         )

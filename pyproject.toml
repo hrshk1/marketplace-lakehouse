@@ -54,6 +54,10 @@ src = ["src", "tests", "scripts", "dags"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "PT", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# Inline SQL fixtures and expected-row tables read better unwrapped.
+"tests/**" = ["E501"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["marketplace", "tests"]
 

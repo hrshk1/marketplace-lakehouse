@@ -1,0 +1,222 @@
+# Silver checks look at the whole table. Silver is the contract Gold builds on,
+# so almost every check is an error: after quarantine, the data must be clean.
+layer: silver
+
+common_checks:
+  - id: slv_{table}_pk_unique
+    type: unique
+    columns: ["{key}"]
+    severity: error
+    threshold: 0
+    why: Silver holds exactly one current row per business key; duplicates would fan out joins.
+  - id: slv_{table}_pk_not_null
+    type: not_null
+    column: "{key}"
+    severity: error
+    threshold: 0
+    why: A null key cannot be joined to and would be dropped silently by inner joins.
+  - id: slv_{table}_bronze_reconciliation
+    type: row_count_reconciliation
+    severity: error
+    threshold: 0
+    except_tables: [product_attributes]
+    why: >-
+      Every key seen in Bronze must be either in Silver or in quarantine. A difference
+      means rows were lost between the layers.
+    left_sql: SELECT count(DISTINCT {source_key}) FROM bronze.{table}
+    right_sql: |
+      SELECT (SELECT count(*) FROM silver.{table})
+           + (SELECT count(DISTINCT q.record_key)
+              FROM silver_quarantine.{table} AS q
+              LEFT ANTI JOIN silver.{table} AS s ON CAST(s.{key} AS STRING) = q.record_key)
+
+tables:
+  categories:
+    key: category_id
+
+  sellers:
+    key: seller_id
+    checks:
+      - id: slv_sellers_gstin_unique
+        type: unique
+        columns: [gstin]
+        severity: error
+        threshold: 0
+        why: GSTIN identifies a registered business; two sellers sharing one is a data error.
+
+  customers:
+    key: customer_id
+    checks:
+      - id: slv_customers_email_format
+        type: regex
+        column: email
+        pattern: '^[^@\s]+@[^@\s]+\.[a-z]{2,}$'
+        severity: error
+        threshold: 0
+        why: Email is the customer contact key for CRM exports.
+      - id: slv_customers_tier_accepted
+        type: accepted_values
+        column: loyalty_tier
+        values: [bronze, silver, gold, platinum]
+        severity: error
+        threshold: 0
+        why: loyalty_tier is a tracked SCD2 attribute; an unknown value would create bad history.
+      - id: slv_customers_pincode_format
+        type: regex
+        column: pincode
+        pattern: '^[1-9][0-9]{5}$'
+        severity: error
+        threshold: 0
+        why: pincode is a tracked SCD2 attribute and must be a valid 6-digit code.
+
+  products:
+    key: product_id
+    checks:
+      - id: slv_products_seller_exists
+        type: relationships
+        column: seller_id
+        to_table: silver.sellers
+        to_column: seller_id
+        severity: error
+        threshold: 0
+        why: dim_product and seller revenue reports need every product to resolve to a seller.
+      - id: slv_products_category_exists
+        type: relationships
+        column: category_id
+        to_table: silver.categories
+        to_column: category_id
+        severity: error
+        threshold: 0
+        why: dim_product flattens the category tree; a missing category breaks the rollup.
+      - id: slv_products_price_positive
+        type: range
+        column: price
+        min: 0.01
+        severity: error
+        threshold: 0
+        why: Prices must be positive for revenue measures to be meaningful.
+
+  orders:
+    key: order_id
+    checks:
+      - id: slv_orders_order_number_unique
+        type: unique
+        columns: [order_number]
+        severity: error
+        threshold: 0
+        why: Checkout retries are quarantined, so each order_number must appear once.
+      - id: slv_orders_status_accepted
+        type: accepted_values
+        column: order_status
+        values: [placed, paid, packed, shipped, delivered, cancelled, returned]
+        severity: error
+        threshold: 0
+        why: Cancellation rate and delivery measures depend on the exact set of statuses.
+      - id: slv_orders_customer_exists
+        type: relationships
+        column: customer_id
+        to_table: silver.customers
+        to_column: customer_id
+        severity: error
+        threshold: 0
+        why: A non-null customer_id must resolve; null ones are handled by the unknown member.
+      - id: slv_orders_total_not_negative
+        type: range
+        column: total_amount
+        min: 0
+        severity: error
+        threshold: 0
+        why: Negative order totals would understate GMV.
+      - id: slv_orders_freshness
+        type: freshness
+        column: updated_at
+        severity: warn
+        threshold: 48
+        why: Stale Silver orders mean the Bronze-to-Silver step is not keeping up.
+
+  order_items:
+    key: order_item_id
+    checks:
+      - id: slv_order_items_order_exists
+        type: relationships
+        column: order_id
+        to_table: silver.orders
+        to_column: order_id
+        severity: error
+        threshold: 0
+        why: The fact table joins every line to its order; orphans are quarantined before this.
+      - id: slv_order_items_product_exists
+        type: relationships
+        column: product_id
+        to_table: silver.products
+        to_column: product_id
+        severity: error
+        threshold: 0
+        why: Every line must resolve to a product for category and seller reporting.
+      - id: slv_order_items_quantity_positive
+        type: range
+        column: quantity
+        min: 1
+        severity: error
+        threshold: 0
+        why: Units sold must be positive.
+
+  payments:
+    key: payment_id
+    checks:
+      - id: slv_payments_order_exists
+        type: relationships
+        column: order_id
+        to_table: silver.orders
+        to_column: order_id
+        severity: error
+        threshold: 0
+        why: fact_payments takes its customer and order date from the order.
+      - id: slv_payments_amount_positive
+        type: range
+        column: amount
+        min: 0.01
+        severity: error
+        threshold: 0
+        why: Non-positive amounts are quarantined; any left would corrupt collected revenue.
+      - id: slv_payments_method_accepted
+        type: accepted_values
+        column: payment_method
+        values: [UPI, CARD, NET_BANKING, COD, WALLET]
+        severity: error
+        threshold: 0
+        why: Each method must exist in dim_payment_method.
+
+  reviews:
+    key: review_id
+    source_key: doc_id
+    checks:
+      - id: slv_reviews_rating_range
+        type: range
+        column: rating
+        min: 1
+        max: 5
+        severity: error
+        threshold: 0
+        why: Ratings outside 1 to 5 would skew average ratings.
+      - id: slv_reviews_product_exists
+        type: relationships
+        column: product_id
+        to_table: silver.products
+        to_column: product_id
+        severity: warn
+        threshold: 0
+        why: Reviews come from a separate database, so a reference can lag behind the product.
+
+  product_attributes:
+    key: product_id
+    source_key: doc_id
+    checks:
+      - id: slv_product_attributes_product_exists
+        type: relationships
+        column: product_id
+        to_table: silver.products
+        to_column: product_id
+        severity: warn
+        threshold: 0
+        why: Attributes come from a separate database, so a reference can lag behind the product.

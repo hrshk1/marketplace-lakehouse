@@ -1,0 +1,29 @@
+# Which part of the pipeline is responsible for catching each defect type the
+# generator can inject. The reconciliation report scores each detector against
+# the generator's ledger.
+detectors:
+  duplicate_order:
+    kind: quarantine
+    table: orders
+    rule_id: ORD_DUPLICATE_NUMBER
+  future_order_date:
+    kind: quarantine
+    table: orders
+    rule_id: ORD_FUTURE_DATE
+  orphan_order_item:
+    kind: quarantine
+    table: order_items
+    rule_id: OI_ORPHAN
+  non_positive_amount:
+    kind: quarantine
+    table: payments
+    rule_id: PAY_NON_POSITIVE_AMOUNT
+  null_customer_id:
+    kind: check
+    check_id: brz_orders_customer_id_not_null
+  late_arriving_update:
+    kind: check
+    check_id: brz_orders_late_arriving
+  schema_drift:
+    kind: schema_change
+    change_type: column_added
