@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
-from tests.helpers import batch, customer_row, ts, upsert
 
 from marketplace.bronze import checkpoints
 from marketplace.bronze.extract import extract_table
 from marketplace.generator.stores import MemoryStore
 from marketplace.sources.readers import MemoryReader, source_table
+from tests.helpers import batch, customer_row, ts, upsert
 
 pytestmark = pytest.mark.spark
 

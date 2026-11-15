@@ -6,12 +6,12 @@ from datetime import timedelta
 
 import pytest
 from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
-from tests.helpers import batch, customer_row, ts
 
 from marketplace.bronze.extract import extract_table
 from marketplace.bronze.schema_evolution import SchemaDriftError, diff_schemas
 from marketplace.generator.stores import MemoryStore
 from marketplace.sources.readers import MemoryReader, source_table
+from tests.helpers import batch, customer_row, ts
 
 pytestmark = pytest.mark.spark
 
