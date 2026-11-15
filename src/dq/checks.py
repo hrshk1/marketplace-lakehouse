@@ -20,6 +20,11 @@ from marketplace.lake import epoch_micros_to_utc, scalar, sql_timestamp
 
 RECORD_KEY = "record_key"
 
+# Row counts of the tables already counted during one run, keyed by table and
+# filter. Many checks share a table, and counting it once per check would
+# dominate the run time.
+RowCounts = dict[tuple[str, str | None], int]
+
 
 @dataclass(frozen=True)
 class Evaluation:
@@ -116,13 +121,22 @@ _ROW_CHECKS: dict[str, Callable[[SparkSession, CheckSpec, Batch], DataFrame]] = 
 }
 
 
-def _evaluate_row_check(spark: SparkSession, spec: CheckSpec, batch: Batch) -> Evaluation:
+def _rows_in_scope(spark: SparkSession, spec: CheckSpec, batch: Batch, counts: RowCounts) -> int:
+    key = (spec.relation, spec.row_filter)
+    if key not in counts:
+        counts[key] = scope(spark, spec, batch).count()
+    return counts[key]
+
+
+def _evaluate_row_check(
+    spark: SparkSession, spec: CheckSpec, batch: Batch, counts: RowCounts
+) -> Evaluation:
     failing = _ROW_CHECKS[spec.check_type](spark, spec, batch)
     if RECORD_KEY not in failing.columns:
         failing = failing.select(_record_key(spec))
-    failing = failing.select(RECORD_KEY).cache()
+    failing = failing.select(RECORD_KEY)
     failed_rows = failing.count()
-    rows_checked = scope(spark, spec, batch).count()
+    rows_checked = _rows_in_scope(spark, spec, batch, counts)
     share = failed_rows / rows_checked if rows_checked else float(failed_rows > 0)
     return Evaluation(
         observed_value=share,
@@ -133,7 +147,9 @@ def _evaluate_row_check(spark: SparkSession, spec: CheckSpec, batch: Batch) -> E
     )
 
 
-def _evaluate_freshness(spark: SparkSession, spec: CheckSpec, batch: Batch) -> Evaluation:
+def _evaluate_freshness(
+    spark: SparkSession, spec: CheckSpec, batch: Batch, counts: RowCounts
+) -> Evaluation:
     """Hours between the end of the batch and the newest value of a timestamp column.
 
     Freshness is measured against the batch's logical time, not the wall
@@ -152,7 +168,9 @@ def _evaluate_freshness(spark: SparkSession, spec: CheckSpec, batch: Batch) -> E
     )
 
 
-def _evaluate_reconciliation(spark: SparkSession, spec: CheckSpec, batch: Batch) -> Evaluation:
+def _evaluate_reconciliation(
+    spark: SparkSession, spec: CheckSpec, batch: Batch, counts: RowCounts
+) -> Evaluation:
     """Relative difference between two counts (or sums) computed by two queries."""
     left = float(scalar(spark, render(spec.params["left_sql"], batch)) or 0)
     right = float(scalar(spark, render(spec.params["right_sql"], batch)) or 0)
@@ -160,13 +178,19 @@ def _evaluate_reconciliation(spark: SparkSession, spec: CheckSpec, batch: Batch)
     return Evaluation(observed_value=difference, details=f"left={left:g} right={right:g}")
 
 
-CHECK_TYPES: dict[str, Callable[[SparkSession, CheckSpec, Batch], Evaluation]] = {
+CHECK_TYPES: dict[str, Callable[[SparkSession, CheckSpec, Batch, RowCounts], Evaluation]] = {
     **dict.fromkeys(_ROW_CHECKS, _evaluate_row_check),
     "freshness": _evaluate_freshness,
     "row_count_reconciliation": _evaluate_reconciliation,
 }
 
 
-def evaluate(spark: SparkSession, spec: CheckSpec, batch: Batch) -> Evaluation:
-    """Run one check and return its raw outcome."""
-    return CHECK_TYPES[spec.check_type](spark, spec, batch)
+def evaluate(
+    spark: SparkSession, spec: CheckSpec, batch: Batch, counts: RowCounts | None = None
+) -> Evaluation:
+    """Run one check and return its raw outcome.
+
+    Pass the same `counts` dictionary to every check of a run to count each
+    table only once.
+    """
+    return CHECK_TYPES[spec.check_type](spark, spec, batch, {} if counts is None else counts)

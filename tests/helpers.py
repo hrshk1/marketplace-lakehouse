@@ -10,7 +10,9 @@ from pyspark.sql import SparkSession
 
 from marketplace.batch import Batch
 from marketplace.bronze.extract import extract_table
+from marketplace.config import Settings
 from marketplace.generator.stores import MemoryStore
+from marketplace.pipeline import PipelineContext, run_batch
 from marketplace.silver.build import SilverResult, build_silver_table
 from marketplace.silver.specs import silver_table
 from marketplace.sources.readers import MemoryReader, source_table
@@ -104,6 +106,60 @@ def payment_row(payment_id: int, order_id: int, updated_at: datetime, **override
     }
     row.update(overrides)
     return row
+
+
+def category_row(category_id: int, name: str, parent_id: int | None = None) -> Row:
+    created = ts("2025-01-01 00:00")
+    return {
+        "category_id": category_id,
+        "category_name": name,
+        "parent_category_id": parent_id,
+        "created_at": created,
+        "updated_at": created,
+    }
+
+
+def seller_row(seller_id: int, updated_at: datetime, **overrides: Any) -> Row:
+    row = {
+        "seller_id": seller_id,
+        "seller_name": f"Seller {seller_id}",
+        "gstin": f"27ABCDE{seller_id:04d}F1Z5",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "rating": Decimal("4.2"),
+        "is_active": True,
+        "created_at": ts("2025-01-01 00:00"),
+        "updated_at": updated_at,
+    }
+    row.update(overrides)
+    return row
+
+
+def product_row(product_id: int, updated_at: datetime, **overrides: Any) -> Row:
+    row = {
+        "product_id": product_id,
+        "seller_id": 1,
+        "category_id": 2,
+        "product_name": f"Product {product_id}",
+        "mrp": Decimal("1200.00"),
+        "price": Decimal("1000.00"),
+        "is_active": True,
+        "deleted_at": None,
+        "created_at": ts("2025-01-01 00:00"),
+        "updated_at": updated_at,
+    }
+    row.update(overrides)
+    return row
+
+
+def memory_context(spark: SparkSession, settings: Settings, store: MemoryStore) -> PipelineContext:
+    """A pipeline context that reads from an in-memory store instead of real sources."""
+    return PipelineContext(spark, settings, MemoryReader(spark, store))
+
+
+def run_day(spark: SparkSession, settings: Settings, store: MemoryStore, day: str) -> None:
+    """Run every pipeline step, including the quality gates, for one batch."""
+    run_batch(memory_context(spark, settings, store), batch(day, run_id=f"run-{day}"))
 
 
 def load_to_silver(

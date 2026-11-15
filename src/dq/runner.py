@@ -8,7 +8,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F  # noqa: N812
 
 from marketplace.batch import Batch
-from marketplace.dq.checks import RECORD_KEY, Evaluation, evaluate
+from marketplace.dq.checks import RECORD_KEY, Evaluation, RowCounts, evaluate
 from marketplace.dq.model import (
     ERROR,
     FAILED,
@@ -66,9 +66,10 @@ def _store_failed_rows(
 def run_checks(spark: SparkSession, checks: list[CheckSpec], batch: Batch) -> list[CheckResult]:
     """Evaluate the checks for one batch and write results and failing keys."""
     checked_at = datetime.now(UTC)
+    counts: RowCounts = {}
     results = []
     for spec in checks:
-        evaluation = evaluate(spark, spec, batch)
+        evaluation = evaluate(spark, spec, batch, counts)
         result = CheckResult(
             spec=spec,
             status=_status(spec, evaluation),
@@ -77,10 +78,8 @@ def run_checks(spark: SparkSession, checks: list[CheckSpec], batch: Batch) -> li
             rows_checked=evaluation.rows_checked,
             details=evaluation.details,
         )
-        if evaluation.failing is not None:
-            if evaluation.failed_rows:
-                _store_failed_rows(spark, spec, evaluation, batch, checked_at)
-            evaluation.failing.unpersist()
+        if evaluation.failed_rows:
+            _store_failed_rows(spark, spec, evaluation, batch, checked_at)
         if result.status != PASSED:
             log.warning(
                 "dq_check_not_passed",

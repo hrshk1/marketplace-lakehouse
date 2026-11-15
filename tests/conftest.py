@@ -38,8 +38,8 @@ def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
         export_root=str(base / "exports"),
         s3_endpoint="",
         ledger_path=base / "ledger.sqlite",
-        spark_master="local[2]",
-        spark_shuffle_partitions=2,
+        spark_master="local[1]",
+        spark_shuffle_partitions=1,
         generator_seed=42,
         defect_rate=0.02,
         schema_drift_day=2,
@@ -53,14 +53,15 @@ def spark(settings: Settings) -> Iterator[SparkSession]:
     session.stop()
 
 
-def use_fresh_catalog(spark: SparkSession, settings: Settings, warehouse: Path) -> None:
-    """Register an empty Iceberg catalog and make it the session default."""
+def use_fresh_catalog(spark: SparkSession, settings: Settings, warehouse: Path) -> str:
+    """Register an empty Iceberg catalog, make it the session default and return its name."""
     name = f"lake_{uuid.uuid4().hex[:10]}"
     catalog_settings = dataclasses.replace(settings, warehouse=str(warehouse))
     for key, value in catalog_conf(catalog_settings, name).items():
         spark.conf.set(key, value)
     spark.sql(f"USE {name}")
     ensure_namespaces(spark)
+    return name
 
 
 @pytest.fixture

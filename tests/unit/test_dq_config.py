@@ -107,7 +107,7 @@ def test_duplicate_check_ids_are_rejected(tmp_path):
         load_layer_checks(config_dir, "gold")
 
 
-@pytest.mark.parametrize("layer", ["bronze", "silver"])
+@pytest.mark.parametrize("layer", ["bronze", "silver", "gold"])
 def test_shipped_configuration_is_valid(layer):
     checks = load_layer_checks(Settings.from_env().config_dir, layer)
 

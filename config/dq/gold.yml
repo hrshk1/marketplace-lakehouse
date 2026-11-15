@@ -1,0 +1,267 @@
+# Gold checks protect the star schema that analysts and dashboards query. They
+# verify keys, referential integrity between facts and dimensions, the SCD2
+# invariants of dim_customer, and that no rows were lost on the way from Silver.
+layer: gold
+
+tables:
+  dim_date:
+    key: date_key
+    checks:
+      - id: gld_dim_date_key_unique
+        type: unique
+        columns: [date_key]
+        severity: error
+        threshold: 0
+        why: A duplicated date would double every fact row that joins to it.
+
+  dim_payment_method:
+    key: payment_method_sk
+    checks:
+      - id: gld_dim_payment_method_sk_unique
+        type: unique
+        columns: [payment_method_sk]
+        severity: error
+        threshold: 0
+        why: Surrogate keys must identify exactly one dimension row.
+
+  dim_seller:
+    key: seller_sk
+    checks:
+      - id: gld_dim_seller_sk_unique
+        type: unique
+        columns: [seller_sk]
+        severity: error
+        threshold: 0
+        why: Surrogate keys must identify exactly one dimension row.
+      - id: gld_dim_seller_id_unique
+        type: unique
+        columns: [seller_id]
+        severity: error
+        threshold: 0
+        why: A Type 1 dimension holds one row per seller.
+
+  dim_product:
+    key: product_sk
+    checks:
+      - id: gld_dim_product_sk_unique
+        type: unique
+        columns: [product_sk]
+        severity: error
+        threshold: 0
+        why: Surrogate keys must identify exactly one dimension row.
+      - id: gld_dim_product_id_unique
+        type: unique
+        columns: [product_id]
+        severity: error
+        threshold: 0
+        why: A Type 1 dimension holds one row per product.
+
+  dim_customer:
+    key: customer_sk
+    checks:
+      - id: gld_dim_customer_sk_unique
+        type: unique
+        columns: [customer_sk]
+        severity: error
+        threshold: 0
+        why: Each version of a customer needs its own surrogate key.
+      - id: gld_dim_customer_one_current_version
+        type: custom_sql
+        severity: error
+        threshold: 0
+        why: SCD2 invariant; exactly one version per customer may be current.
+        sql: |
+          SELECT CAST(customer_id AS STRING) AS record_key
+          FROM gold.dim_customer
+          GROUP BY customer_id
+          HAVING sum(CAST(is_current AS INT)) <> 1
+      - id: gld_dim_customer_no_overlapping_versions
+        type: custom_sql
+        severity: error
+        threshold: 0
+        why: >-
+          SCD2 invariant; overlapping validity ranges would make the point-in-time join
+          return two versions and duplicate fact rows.
+        sql: |
+          SELECT DISTINCT CAST(a.customer_sk AS STRING) AS record_key
+          FROM gold.dim_customer AS a
+          JOIN gold.dim_customer AS b
+            ON a.customer_id = b.customer_id
+           AND a.customer_sk <> b.customer_sk
+           AND a.valid_from < b.valid_to
+           AND b.valid_from < a.valid_to
+      - id: gld_dim_customer_valid_range
+        type: custom_sql
+        severity: error
+        threshold: 0
+        why: A version must start before it ends.
+        sql: |
+          SELECT CAST(customer_sk AS STRING) AS record_key
+          FROM gold.dim_customer
+          WHERE valid_from >= valid_to
+      - id: gld_dim_customer_covers_silver
+        type: row_count_reconciliation
+        severity: error
+        threshold: 0
+        why: Every Silver customer must have a current version in the dimension.
+        left_sql: SELECT count(*) FROM silver.customers
+        right_sql: SELECT count(*) FROM gold.dim_customer WHERE is_current AND customer_id > 0
+
+  fact_order_items:
+    key: order_item_id
+    checks:
+      - id: gld_fact_order_items_pk_unique
+        type: unique
+        columns: [order_item_id]
+        severity: error
+        threshold: 0
+        why: The grain is one row per order line.
+      - id: gld_fact_order_items_customer_fk
+        type: relationships
+        column: customer_sk
+        to_table: gold.dim_customer
+        to_column: customer_sk
+        severity: error
+        threshold: 0
+        why: Every fact row must join to a dimension row, the unknown member at worst.
+      - id: gld_fact_order_items_product_fk
+        type: relationships
+        column: product_sk
+        to_table: gold.dim_product
+        to_column: product_sk
+        severity: error
+        threshold: 0
+        why: Every fact row must join to a dimension row, the unknown member at worst.
+      - id: gld_fact_order_items_seller_fk
+        type: relationships
+        column: seller_sk
+        to_table: gold.dim_seller
+        to_column: seller_sk
+        severity: error
+        threshold: 0
+        why: Every fact row must join to a dimension row, the unknown member at worst.
+      - id: gld_fact_order_items_date_fk
+        type: relationships
+        column: order_date_key
+        to_table: gold.dim_date
+        to_column: date_key
+        severity: error
+        threshold: 0
+        why: An order date outside the calendar would vanish from time-based reports.
+      - id: gld_fact_order_items_payment_method_fk
+        type: relationships
+        column: payment_method_sk
+        to_table: gold.dim_payment_method
+        to_column: payment_method_sk
+        severity: error
+        threshold: 0
+        why: Every fact row must join to a dimension row, the unknown member at worst.
+      - id: gld_fact_order_items_point_in_time
+        type: custom_sql
+        severity: error
+        threshold: 0
+        why: >-
+          The customer key must be the version valid when the order was placed. A row whose
+          order time falls outside its version's validity means the join used the wrong one.
+        sql: |
+          SELECT CAST(f.order_item_id AS STRING) AS record_key
+          FROM gold.fact_order_items AS f
+          JOIN gold.dim_customer AS c ON c.customer_sk = f.customer_sk
+          WHERE f.customer_sk <> -1
+            AND NOT (f.order_ts >= c.valid_from AND f.order_ts < c.valid_to)
+      - id: gld_fact_order_items_total_not_negative
+        type: range
+        column: item_total
+        min: 0
+        severity: error
+        threshold: 0
+        why: Negative line totals would understate GMV.
+      - id: gld_fact_order_items_known_customer
+        type: range
+        column: customer_sk
+        min: 0
+        severity: warn
+        threshold: 0.02
+        why: A few orders without a customer are expected; more than 2 percent is a source problem.
+      - id: gld_fact_order_items_silver_reconciliation
+        type: row_count_reconciliation
+        severity: error
+        threshold: 0
+        why: Every accepted order line in Silver must appear in the fact table exactly once.
+        left_sql: SELECT count(*) FROM silver.order_items
+        right_sql: SELECT count(*) FROM gold.fact_order_items
+
+  fact_payments:
+    key: payment_id
+    checks:
+      - id: gld_fact_payments_pk_unique
+        type: unique
+        columns: [payment_id]
+        severity: error
+        threshold: 0
+        why: The grain is one row per payment attempt.
+      - id: gld_fact_payments_customer_fk
+        type: relationships
+        column: customer_sk
+        to_table: gold.dim_customer
+        to_column: customer_sk
+        severity: error
+        threshold: 0
+        why: Every fact row must join to a dimension row, the unknown member at worst.
+      - id: gld_fact_payments_payment_method_fk
+        type: relationships
+        column: payment_method_sk
+        to_table: gold.dim_payment_method
+        to_column: payment_method_sk
+        severity: error
+        threshold: 0
+        why: Every fact row must join to a dimension row, the unknown member at worst.
+      - id: gld_fact_payments_date_fk
+        type: relationships
+        column: payment_date_key
+        to_table: gold.dim_date
+        to_column: date_key
+        severity: error
+        threshold: 0
+        why: A payment date outside the calendar would vanish from time-based reports.
+      - id: gld_fact_payments_amount_positive
+        type: range
+        column: amount
+        min: 0.01
+        severity: error
+        threshold: 0
+        why: Non-positive amounts are quarantined in Silver and must never reach the fact.
+      - id: gld_fact_payments_silver_reconciliation
+        type: row_count_reconciliation
+        severity: error
+        threshold: 0
+        why: Every accepted payment attempt in Silver must appear in the fact table exactly once.
+        left_sql: SELECT count(*) FROM silver.payments
+        right_sql: SELECT count(*) FROM gold.fact_payments
+
+  agg_daily_sales:
+    key: [date_key, category, city]
+    checks:
+      - id: gld_agg_daily_sales_grain_unique
+        type: unique
+        columns: [date_key, category, city]
+        severity: error
+        threshold: 0
+        why: The aggregate has one row per date, department and city.
+      - id: gld_agg_daily_sales_cancellation_rate_range
+        type: range
+        column: cancellation_rate
+        min: 0
+        max: 1
+        severity: error
+        threshold: 0
+        why: A rate outside 0 to 1 means the aggregate logic is wrong.
+      - id: gld_agg_daily_sales_gmv_matches_fact
+        type: row_count_reconciliation
+        severity: error
+        threshold: 0
+        why: Total GMV in the aggregate must equal the fact it was computed from.
+        left_sql: >-
+          SELECT coalesce(sum(item_total), 0) FROM gold.fact_order_items
+          WHERE order_status <> 'cancelled'
+        right_sql: SELECT coalesce(sum(gmv), 0) FROM gold.agg_daily_sales
