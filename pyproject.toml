@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marketplace-lakehouse"
+version = "0.1.0"
+description = "Batch lakehouse and star-schema warehouse for an online marketplace"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "pyspark==3.5.9",
+    "psycopg[binary]==3.3.5",
+    "pymongo==4.18.1",
+    "pyarrow==25.0.1",
+    "PyYAML==6.0.3",
+    "Faker==40.54.0",
+    "requests==2.34.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.17.5",
+    "pre-commit==4.7.0",
+]
+
+# The code lives in src/ but is imported as `marketplace`, so module paths
+# stay short (src/dq, src/generator) without exposing a package called `src`.
+[tool.setuptools]
+package-dir = { "marketplace" = "src" }
+packages = [
+    "marketplace",
+    "marketplace.bi",
+    "marketplace.bronze",
+    "marketplace.dq",
+    "marketplace.generator",
+    "marketplace.gold",
+    "marketplace.ops",
+    "marketplace.publish",
+    "marketplace.silver",
+    "marketplace.sources",
+]
+
+[tool.setuptools.package-data]
+"marketplace.generator" = ["sql/*.sql"]
+"marketplace.gold" = ["sql/*.sql"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts", "dags"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "PT", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["marketplace"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "spark: needs a local Spark session (JDK 17 and the pinned jars)",
+    "postgres: needs a reachable PostgreSQL instance (see TEST_PG_DSN)",
+    "airflow: needs Apache Airflow installed",
+]
+filterwarnings = ["ignore::DeprecationWarning:pyspark.*"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

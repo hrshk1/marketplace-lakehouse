@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.17.5
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.16
+        env:
+          POSTGRES_DB: warehouse_test
+          POSTGRES_USER: platform
+          POSTGRES_PASSWORD: platform_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U platform -d warehouse_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_PG_DSN: host=localhost port=5432 dbname=warehouse_test user=platform password=platform_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Cache Spark jars
+        uses: actions/cache@v4
+        with:
+          path: jars
+          key: jars-${{ hashFiles('scripts/fetch_jars.py') }}
+      - run: python scripts/fetch_jars.py --dest jars
+      - run: pip install -e ".[dev]"
+      - run: pytest --cov --cov-report=term-missing:skip-covered

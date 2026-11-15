@@ -1,0 +1,203 @@
+name: marketplace-lakehouse
+
+# Memory limits are sized for Docker Desktop with about 8 GB. The always-on
+# services add up to roughly 6.9 GB of limits; real usage is lower because the
+# Airflow scheduler only grows when a Spark task is running. The `tools`
+# container is started on demand by scripts/dev.py and exits when it is done.
+
+x-pipeline: &pipeline
+  image: marketplace-lakehouse:local
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  env_file: .env
+  volumes:
+    - .:/opt/project
+    - airflow-logs:/opt/airflow/logs
+
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  # One task at a time: every task starts its own Spark driver, and two of
+  # them would not fit in the scheduler's memory limit.
+  AIRFLOW__CORE__PARALLELISM: "1"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/project/dags
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PLATFORM_PG_USER}:${PLATFORM_PG_PASSWORD}@postgres-platform:5432/airflow
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+
+x-airflow-depends: &airflow-depends
+  postgres-platform:
+    condition: service_healthy
+  airflow-init:
+    condition: service_completed_successfully
+
+services:
+  postgres-source:
+    image: postgres:16.16
+    environment:
+      POSTGRES_DB: ${OLTP_PG_DB}
+      POSTGRES_USER: ${OLTP_PG_USER}
+      POSTGRES_PASSWORD: ${OLTP_PG_PASSWORD}
+    ports:
+      - "${HOST_PORT_OLTP_PG}:5432"
+    volumes:
+      - oltp-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OLTP_PG_USER} -d ${OLTP_PG_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 384m
+
+  postgres-platform:
+    image: postgres:16.16
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: ${PLATFORM_PG_USER}
+      POSTGRES_PASSWORD: ${PLATFORM_PG_PASSWORD}
+    ports:
+      - "${HOST_PORT_PLATFORM_PG}:5432"
+    volumes:
+      - platform-data:/var/lib/postgresql/data
+      - ./docker/postgres-platform/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PLATFORM_PG_USER} -d warehouse"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+
+  mongo:
+    image: mongo:7.0.48
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    ports:
+      - "${HOST_PORT_MONGO}:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    # Top-level directories of the data drive are buckets, so creating them
+    # before the server starts avoids a separate bucket-provisioning job.
+    entrypoint: ["sh", "-c"]
+    command:
+      - mkdir -p /data/${LAKE_BUCKET} /data/${EXPORT_BUCKET} && exec minio server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    ports:
+      - "${HOST_PORT_MINIO_API}:9000"
+      - "${HOST_PORT_MINIO_CONSOLE}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 384m
+
+  airflow-init:
+    <<: *pipeline
+    environment: *airflow-env
+    command: ["db", "migrate"]
+    depends_on:
+      postgres-platform:
+        condition: service_healthy
+    mem_limit: 1g
+
+  airflow-apiserver:
+    <<: *pipeline
+    environment: *airflow-env
+    command: ["api-server"]
+    ports:
+      - "${HOST_PORT_AIRFLOW}:8080"
+    depends_on: *airflow-depends
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    mem_limit: 1g
+
+  airflow-dag-processor:
+    <<: *pipeline
+    environment: *airflow-env
+    command: ["dag-processor"]
+    depends_on: *airflow-depends
+    mem_limit: 640m
+
+  airflow-scheduler:
+    <<: *pipeline
+    environment: *airflow-env
+    command: ["scheduler"]
+    depends_on:
+      <<: *airflow-depends
+      airflow-apiserver:
+        condition: service_healthy
+      postgres-source:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 2560m
+
+  metabase:
+    image: metabase/metabase:v0.64.6.2
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: postgres-platform
+      MB_DB_PORT: "5432"
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: ${PLATFORM_PG_USER}
+      MB_DB_PASS: ${PLATFORM_PG_PASSWORD}
+      MB_CHECK_FOR_UPDATES: "false"
+      MB_ANON_TRACKING_ENABLED: "false"
+      JAVA_OPTS: -Xmx768m
+    ports:
+      - "${HOST_PORT_METABASE}:3000"
+    depends_on:
+      postgres-platform:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 60s
+    mem_limit: 1280m
+
+  tools:
+    <<: *pipeline
+    profiles: ["tools"]
+    entrypoint: []
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+      postgres-platform:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 2560m
+
+volumes:
+  oltp-data:
+  platform-data:
+  mongo-data:
+  minio-data:
+  airflow-logs:
