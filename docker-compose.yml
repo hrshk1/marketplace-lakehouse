@@ -184,6 +184,10 @@ services:
     <<: *pipeline
     profiles: ["tools"]
     entrypoint: []
+    environment:
+      TEST_PG_DSN: >-
+        host=postgres-platform port=5432 dbname=warehouse_test
+        user=${PLATFORM_PG_USER} password=${PLATFORM_PG_PASSWORD}
     depends_on:
       postgres-source:
         condition: service_healthy

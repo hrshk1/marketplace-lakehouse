@@ -154,7 +154,7 @@ def product_row(product_id: int, updated_at: datetime, **overrides: Any) -> Row:
 
 def memory_context(spark: SparkSession, settings: Settings, store: MemoryStore) -> PipelineContext:
     """A pipeline context that reads from an in-memory store instead of real sources."""
-    return PipelineContext(spark, settings, MemoryReader(spark, store))
+    return PipelineContext(spark, settings, MemoryReader(spark, store), dw_conninfo=None)
 
 
 def run_day(spark: SparkSession, settings: Settings, store: MemoryStore, day: str) -> None:

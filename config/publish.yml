@@ -1,0 +1,73 @@
+# Tables published from the lakehouse to the serving warehouse (Postgres, schema dw).
+#
+# group: `analytics` tables are published only after the Gold quality gate passes;
+#        `operations` tables are published at the end of every run, even a failed
+#        one, so the Pipeline Health dashboard can show what went wrong.
+schema: dw
+tables:
+  - source: gold.dim_date
+    target: dim_date
+    group: analytics
+    primary_key: [date_key]
+    indexes: [[full_date]]
+
+  - source: gold.dim_customer
+    target: dim_customer
+    group: analytics
+    primary_key: [customer_sk]
+    indexes: [[customer_id, valid_from], [is_current]]
+
+  - source: gold.dim_seller
+    target: dim_seller
+    group: analytics
+    primary_key: [seller_sk]
+    indexes: [[seller_id]]
+
+  - source: gold.dim_product
+    target: dim_product
+    group: analytics
+    primary_key: [product_sk]
+    indexes: [[product_id], [department]]
+
+  - source: gold.dim_payment_method
+    target: dim_payment_method
+    group: analytics
+    primary_key: [payment_method_sk]
+
+  - source: gold.fact_order_items
+    target: fact_order_items
+    group: analytics
+    primary_key: [order_item_id]
+    indexes: [[order_date_key], [customer_sk], [product_sk], [seller_sk], [order_id]]
+
+  - source: gold.fact_payments
+    target: fact_payments
+    group: analytics
+    primary_key: [payment_id]
+    indexes: [[payment_date_key], [order_id], [payment_method_sk]]
+
+  - source: gold.agg_daily_sales
+    target: agg_daily_sales
+    group: analytics
+    primary_key: [date_key, category, city]
+
+  - source: dq.check_results
+    target: dq_check_results
+    group: operations
+    indexes: [[batch_id], [check_id]]
+
+  - source: ops.pipeline_runs
+    target: pipeline_runs
+    group: operations
+    indexes: [[batch_id], [run_id]]
+
+  - source: dq.schema_changes
+    target: schema_changes
+    group: operations
+
+  # Not a stored table: a per-rule count over all silver_quarantine tables,
+  # built at export time.
+  - source: quarantine_summary
+    target: quarantine_summary
+    group: operations
+    indexes: [[batch_id]]

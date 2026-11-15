@@ -47,6 +47,15 @@ def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
 
 
 @pytest.fixture(scope="session")
+def warehouse_dsn() -> str:
+    """Connection string of a scratch Postgres database; tests needing it skip without it."""
+    dsn = os.environ.get("TEST_PG_DSN", "").strip()
+    if not dsn:
+        pytest.skip("TEST_PG_DSN is not set; skipping tests that need PostgreSQL")
+    return dsn
+
+
+@pytest.fixture(scope="session")
 def spark(settings: Settings) -> Iterator[SparkSession]:
     session = build_spark(settings, app_name="marketplace-tests")
     yield session

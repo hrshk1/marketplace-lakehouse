@@ -76,11 +76,16 @@ class Ledger:
         rows = self._conn.execute(query + " ORDER BY defect_id", params).fetchall()
         return [Defect(*row) for row in rows]
 
-    def keys_by_type(self) -> dict[str, set[str]]:
-        """Return the set of defective record keys for each defect type."""
+    def keys_by_type(self, through_day: int | None = None) -> dict[str, set[str]]:
+        """Return the defective record keys for each defect type.
+
+        `through_day` limits the answer to defects injected on or before that
+        simulated day, for scoring a pipeline that has not processed later days.
+        """
         result: dict[str, set[str]] = {}
         for defect in self.defects():
-            result.setdefault(defect.defect_type, set()).add(defect.record_key)
+            if through_day is None or defect.sim_day <= through_day:
+                result.setdefault(defect.defect_type, set()).add(defect.record_key)
         return result
 
     def frozen_order_ids(self) -> set[int]:
