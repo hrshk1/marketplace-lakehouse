@@ -1,0 +1,128 @@
+name: Customer and Retention
+description: Monthly cohorts, new versus returning buyers, loyalty tiers and customer history.
+cards:
+  - name: Cohort retention (% of cohort buying again)
+    display: pivot
+    width: 24
+    height: 8
+    visualization:
+      pivot_table.column_split:
+        rows: [cohort]
+        columns: [months_since_first_order]
+        values: [retention_pct]
+    sql: |
+      WITH purchases AS (
+          SELECT DISTINCT c.customer_id, date_trunc('month', d.full_date)::date AS order_month
+          FROM dw.fact_order_items AS f
+          JOIN dw.dim_customer AS c ON c.customer_sk = f.customer_sk
+          JOIN dw.dim_date AS d ON d.date_key = f.order_date_key
+          WHERE f.order_status <> 'cancelled' AND c.customer_id > 0
+      ),
+      cohorts AS (
+          SELECT customer_id, min(order_month) AS cohort_month FROM purchases GROUP BY customer_id
+      ),
+      cohort_sizes AS (
+          SELECT cohort_month, count(*) AS cohort_size FROM cohorts GROUP BY cohort_month
+      )
+      SELECT to_char(cohorts.cohort_month, 'YYYY-MM') AS cohort,
+             (
+                 12 * extract(YEAR FROM age(purchases.order_month, cohorts.cohort_month))
+                 + extract(MONTH FROM age(purchases.order_month, cohorts.cohort_month))
+             )::int AS months_since_first_order,
+             round(100.0 * count(*) / max(cohort_sizes.cohort_size), 1) AS retention_pct
+      FROM purchases
+      JOIN cohorts ON cohorts.customer_id = purchases.customer_id
+      JOIN cohort_sizes ON cohort_sizes.cohort_month = cohorts.cohort_month
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+
+  - name: New versus returning customers by month
+    display: bar
+    width: 12
+    height: 7
+    visualization:
+      graph.dimensions: [month]
+      graph.metrics: [new_customers, returning_customers]
+      stackable.stack_type: stacked
+    sql: |
+      WITH purchases AS (
+          SELECT DISTINCT c.customer_id, date_trunc('month', d.full_date)::date AS order_month
+          FROM dw.fact_order_items AS f
+          JOIN dw.dim_customer AS c ON c.customer_sk = f.customer_sk
+          JOIN dw.dim_date AS d ON d.date_key = f.order_date_key
+          WHERE f.order_status <> 'cancelled' AND c.customer_id > 0
+      ),
+      labelled AS (
+          SELECT order_month,
+                 order_month = min(order_month) OVER (PARTITION BY customer_id) AS is_first_month
+          FROM purchases
+      )
+      SELECT to_char(order_month, 'YYYY-MM') AS month,
+             count(*) FILTER (WHERE is_first_month) AS new_customers,
+             count(*) FILTER (WHERE NOT is_first_month) AS returning_customers
+      FROM labelled
+      GROUP BY order_month
+      ORDER BY order_month
+
+  - name: Customers by current loyalty tier
+    display: pie
+    width: 6
+    height: 7
+    visualization:
+      pie.dimension: loyalty_tier
+      pie.metric: customers
+    sql: |
+      SELECT loyalty_tier, count(*) AS customers
+      FROM dw.dim_customer
+      WHERE is_current AND customer_id > 0
+      GROUP BY loyalty_tier
+      ORDER BY customers DESC
+
+  - name: Average order value by tier at purchase time
+    display: bar
+    width: 6
+    height: 7
+    visualization:
+      graph.dimensions: [loyalty_tier]
+      graph.metrics: [avg_order_value]
+    sql: |
+      WITH order_values AS (
+          SELECT f.order_id, c.loyalty_tier, sum(f.item_total) AS order_value
+          FROM dw.fact_order_items AS f
+          JOIN dw.dim_customer AS c ON c.customer_sk = f.customer_sk
+          WHERE f.order_status <> 'cancelled' AND c.customer_id > 0
+          GROUP BY f.order_id, c.loyalty_tier
+      )
+      SELECT loyalty_tier, round(avg(order_value), 2) AS avg_order_value
+      FROM order_values
+      GROUP BY loyalty_tier
+      ORDER BY avg_order_value DESC
+
+  - name: Customer attribute changes captured as SCD2 versions
+    display: bar
+    width: 12
+    height: 6
+    visualization:
+      graph.dimensions: [changed_on]
+      graph.metrics: [new_versions]
+    sql: |
+      SELECT valid_from::date AS changed_on, count(*) AS new_versions
+      FROM dw.dim_customer
+      WHERE customer_id > 0 AND valid_from > TIMESTAMPTZ '1900-01-01 00:00:00+00'
+      GROUP BY 1
+      ORDER BY 1
+
+  - name: Top 10 cities by active customers
+    display: row
+    width: 12
+    height: 6
+    visualization:
+      graph.dimensions: [city]
+      graph.metrics: [customers]
+    sql: |
+      SELECT city, count(*) AS customers
+      FROM dw.dim_customer
+      WHERE is_current AND customer_id > 0
+      GROUP BY city
+      ORDER BY customers DESC
+      LIMIT 10

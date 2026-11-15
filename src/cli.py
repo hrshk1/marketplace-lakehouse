@@ -14,6 +14,7 @@ import time
 from datetime import date
 
 from marketplace.batch import Batch, new_run_id
+from marketplace.bi.metabase import provision
 from marketplace.config import Settings
 from marketplace.dq.loader import LAYERS
 from marketplace.dq.model import PASSED, CheckResult, DataQualityError
@@ -136,6 +137,11 @@ def cmd_maintain(args: argparse.Namespace, settings: Settings) -> None:
         )
 
 
+def cmd_provision_bi(args: argparse.Namespace, settings: Settings) -> None:
+    for name, dashboard_id in provision(settings).items():
+        print(f"Dashboard ready: {name} (/dashboard/{dashboard_id})")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="marketplace", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -163,6 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "maintain", help="compact tables, expire snapshots, remove orphan files"
     ).set_defaults(handler=cmd_maintain)
+
+    commands.add_parser(
+        "provision-bi", help="create or update the Metabase connection and dashboards"
+    ).set_defaults(handler=cmd_provision_bi)
     return parser
 
 

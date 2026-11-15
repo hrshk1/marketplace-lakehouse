@@ -9,7 +9,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F  # noqa: N812
 
 from marketplace.batch import Batch
-from marketplace.bronze import checkpoints
+from marketplace.bronze import checkpoints, schema_evolution
 from marketplace.bronze.schema_evolution import SchemaDriftError, apply_schema_changes, diff_schemas
 from marketplace.lake import create_table, table_exists
 from marketplace.logging_setup import get_logger
@@ -46,6 +46,7 @@ def extract_table(
     makes that replacement a whole-partition swap in a single Iceberg commit.
     """
     checkpoints.ensure_table(spark)
+    schema_evolution.ensure_table(spark)
     target = bronze_table(table.name)
     window = checkpoints.resolve_window(
         checkpoints.previous_high_watermark(spark, table.name, batch.batch_id),

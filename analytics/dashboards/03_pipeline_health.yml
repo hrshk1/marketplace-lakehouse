@@ -1,0 +1,131 @@
+name: Pipeline Health
+description: Quality check results, quarantined rows, run durations and schema changes.
+cards:
+  - name: Latest batch
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT max(batch_id) AS "Latest batch" FROM dw.pipeline_runs WHERE layer = 'dq_gold'
+
+  - name: Failed steps, all runs
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT count(*) AS "Failed steps" FROM dw.pipeline_runs WHERE status = 'failed'
+
+  - name: Steps over their SLA, all runs
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT count(*) AS "SLA breaches" FROM dw.pipeline_runs WHERE sla_breached
+
+  - name: Rows quarantined, all batches
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT coalesce(sum(rejected_rows), 0) AS "Quarantined rows" FROM dw.quarantine_summary
+
+  - name: Check results by layer, latest run of each batch
+    display: bar
+    width: 12
+    height: 7
+    visualization:
+      graph.dimensions: [batch_layer, status]
+      graph.metrics: [checks]
+      stackable.stack_type: stacked
+    sql: |
+      WITH latest AS (
+          SELECT batch_id, layer, max(checked_at) AS checked_at
+          FROM dw.dq_check_results
+          GROUP BY batch_id, layer
+      )
+      SELECT r.batch_id || ' ' || r.layer AS batch_layer, r.status, count(*) AS checks
+      FROM dw.dq_check_results AS r
+      JOIN latest
+        ON latest.batch_id = r.batch_id
+       AND latest.layer = r.layer
+       AND latest.checked_at = r.checked_at
+      GROUP BY 1, 2
+      ORDER BY 1, 2
+
+  - name: Checks that did not pass, latest batch
+    display: table
+    width: 12
+    height: 7
+    sql: |
+      SELECT layer, table_name, check_id, severity, status, failed_rows, rows_checked,
+             round(observed_value::numeric, 5) AS observed_value, threshold, details
+      FROM dw.dq_check_results
+      WHERE status <> 'pass'
+        AND checked_at = (
+            SELECT max(checked_at) FROM dw.dq_check_results AS latest
+            WHERE latest.layer = dw.dq_check_results.layer
+        )
+      ORDER BY layer, table_name, check_id
+
+  - name: Quarantined rows by rule
+    display: row
+    width: 12
+    height: 7
+    visualization:
+      graph.dimensions: [rule]
+      graph.metrics: [rejected_rows]
+    sql: |
+      SELECT table_name || ': ' || rule_id AS rule, sum(rejected_rows) AS rejected_rows
+      FROM dw.quarantine_summary
+      GROUP BY 1
+      ORDER BY rejected_rows DESC
+
+  - name: Run duration by layer and batch (seconds)
+    display: bar
+    width: 12
+    height: 7
+    visualization:
+      graph.dimensions: [batch_id, layer]
+      graph.metrics: [duration_seconds]
+      stackable.stack_type: stacked
+    sql: |
+      WITH latest_run AS (
+          SELECT batch_id, max(started_at) AS started_at
+          FROM dw.pipeline_runs
+          WHERE layer = 'bronze'
+          GROUP BY batch_id
+      ),
+      runs AS (
+          SELECT DISTINCT p.batch_id, p.run_id
+          FROM dw.pipeline_runs AS p
+          JOIN latest_run ON latest_run.batch_id = p.batch_id AND latest_run.started_at = p.started_at
+      )
+      SELECT p.batch_id, p.layer, round(sum(p.duration_seconds)::numeric, 1) AS duration_seconds
+      FROM dw.pipeline_runs AS p
+      JOIN runs ON runs.batch_id = p.batch_id AND runs.run_id = p.run_id
+      WHERE p.layer <> 'maintenance'
+      GROUP BY p.batch_id, p.layer
+      ORDER BY p.batch_id, p.layer
+
+  - name: Rows in, out and quarantined per Silver table, latest batch
+    display: table
+    width: 12
+    height: 7
+    sql: |
+      SELECT step AS table_name, rows_in, rows_out, rows_quarantined,
+             round(duration_seconds::numeric, 1) AS duration_seconds
+      FROM dw.pipeline_runs
+      WHERE layer = 'silver'
+        AND started_at >= (
+            SELECT max(started_at) FROM dw.pipeline_runs WHERE layer = 'silver' AND step = 'categories'
+        )
+      ORDER BY rows_in DESC
+
+  - name: Source schema changes
+    display: table
+    width: 12
+    height: 7
+    sql: |
+      SELECT detected_at, batch_id, table_name, column_name, change_type, old_type, new_type
+      FROM dw.schema_changes
+      ORDER BY detected_at DESC

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructField, StructType
 
-from marketplace.lake import append_rows
+from marketplace.lake import append_rows, table_exists
 
 SCHEMA_CHANGES_TABLE = "dq.schema_changes"
 _SCHEMA_CHANGES_DDL = (
@@ -52,6 +52,12 @@ class SchemaDiff:
     @property
     def is_empty(self) -> bool:
         return not (self.added or self.removed or self.retyped)
+
+
+def ensure_table(spark: SparkSession) -> None:
+    """Create the schema change log up front, so it can be published even when empty."""
+    if not table_exists(spark, SCHEMA_CHANGES_TABLE):
+        spark.sql(f"CREATE TABLE {SCHEMA_CHANGES_TABLE} ({_SCHEMA_CHANGES_DDL}) USING iceberg")
 
 
 def diff_schemas(existing: StructType, incoming: StructType) -> SchemaDiff:

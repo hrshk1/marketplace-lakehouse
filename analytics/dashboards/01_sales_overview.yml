@@ -1,0 +1,109 @@
+# Width and height are in Metabase grid units; the grid is 24 units wide.
+# Cards are laid out left to right in the order they are listed.
+name: Sales Overview
+description: GMV, orders and average order value, with trend, top departments and top cities.
+cards:
+  - name: Total GMV
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT sum(item_total) AS "GMV (INR)"
+      FROM dw.fact_order_items
+      WHERE order_status <> 'cancelled'
+
+  - name: Orders
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT count(DISTINCT order_id) AS "Orders"
+      FROM dw.fact_order_items
+      WHERE order_status <> 'cancelled'
+
+  - name: Average order value
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT round(sum(item_total) / count(DISTINCT order_id), 2) AS "AOV (INR)"
+      FROM dw.fact_order_items
+      WHERE order_status <> 'cancelled'
+
+  - name: Cancellation rate
+    display: scalar
+    width: 6
+    height: 3
+    sql: |
+      SELECT round(
+                 100.0 * count(DISTINCT order_id) FILTER (WHERE order_status = 'cancelled')
+                 / count(DISTINCT order_id), 2
+             ) AS "Cancelled orders (%)"
+      FROM dw.fact_order_items
+
+  - name: Daily GMV, last 90 days of data
+    display: line
+    width: 16
+    height: 7
+    visualization:
+      graph.dimensions: [day]
+      graph.metrics: [gmv]
+    sql: |
+      SELECT d.full_date AS day, sum(a.gmv) AS gmv
+      FROM dw.agg_daily_sales AS a
+      JOIN dw.dim_date AS d ON d.date_key = a.date_key
+      WHERE d.full_date > (
+          SELECT max(d2.full_date) - 90
+          FROM dw.agg_daily_sales AS a2
+          JOIN dw.dim_date AS d2 ON d2.date_key = a2.date_key
+      )
+      GROUP BY d.full_date
+      ORDER BY d.full_date
+
+  - name: Monthly GMV and growth
+    display: table
+    width: 8
+    height: 7
+    sql: |
+      WITH monthly AS (
+          SELECT date_trunc('month', d.full_date)::date AS month_start, sum(a.gmv) AS gmv
+          FROM dw.agg_daily_sales AS a
+          JOIN dw.dim_date AS d ON d.date_key = a.date_key
+          GROUP BY 1
+      )
+      SELECT to_char(month_start, 'YYYY-MM') AS month,
+             gmv,
+             round(
+                 100.0 * (gmv - lag(gmv) OVER (ORDER BY month_start))
+                 / lag(gmv) OVER (ORDER BY month_start), 1
+             ) AS growth_pct
+      FROM monthly
+      ORDER BY month_start DESC
+
+  - name: GMV by department
+    display: bar
+    width: 12
+    height: 7
+    visualization:
+      graph.dimensions: [department]
+      graph.metrics: [gmv]
+    sql: |
+      SELECT category AS department, sum(gmv) AS gmv
+      FROM dw.agg_daily_sales
+      GROUP BY category
+      ORDER BY gmv DESC
+
+  - name: Top 10 cities by GMV
+    display: row
+    width: 12
+    height: 7
+    visualization:
+      graph.dimensions: [city]
+      graph.metrics: [gmv]
+    sql: |
+      SELECT city, sum(gmv) AS gmv
+      FROM dw.agg_daily_sales
+      WHERE city <> 'Unknown'
+      GROUP BY city
+      ORDER BY gmv DESC
+      LIMIT 10
