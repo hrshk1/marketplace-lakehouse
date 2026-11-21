@@ -13,14 +13,19 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+
+#Calculates the project’s root folder on your computer by going two levels up from this file
 _DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 
 
+#checks if env variable exists, if exists then strip and return otherwise use default value
 def _env(name: str, default: str) -> str:
     value = os.environ.get(name, "").strip()
     return value or default
 
 
+#dataclass is a decorator used when the class is mainly used for storing data and self is also not required
+#frozen = true means read only 
 @dataclass(frozen=True)
 class Settings:
     """All configuration for the generator, the pipeline and the BI provisioning."""
@@ -74,6 +79,7 @@ class Settings:
         """Build settings from the process environment, applying local defaults."""
         root = Path(_env("PROJECT_ROOT", str(_DEFAULT_ROOT)))
         data_dir = root / "data"
+        #Take all the environment variables we just parsed, pass them to the class to create a new Settings object, and return it
         return cls(
             project_root=root,
             reports_dir=Path(_env("REPORTS_DIR", str(root / "reports"))),
@@ -136,3 +142,4 @@ class Settings:
     def config_dir(self) -> Path:
         """Directory holding the declarative YAML configuration."""
         return self.project_root / "config"
+#when using propert u can call a function with ()

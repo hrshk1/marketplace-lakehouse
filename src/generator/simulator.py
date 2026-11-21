@@ -71,17 +71,21 @@ class MarketplaceSimulator:
     def seed(self) -> DaySummary:
         """Reset the sources and build the state as of the end of day 0."""
         config, profile = self._config, self._config.profile
+        #below two resets the store and ledger
         self._store.reset()
         self._ledger.reset()
         self._next_order_id = 1
         self._next_customer_id = 1
-
+        # giving the same seed will always produce the same data
         rng = random.Random(f"{config.seed}:seed")
+        #initialises the factory which is used to create the entities
         factory = EntityFactory(config.seed, stream=0)
-        epoch = config.day_start(0)
-        as_of = config.day_end(0)
+        epoch = config.day_start(0) #start of the day
+        as_of = config.day_end(0)  #end of the day
+        #keep track of how many rows are inserted, updated, and corrupted with defects during Day 0.
         summary = DaySummary(0, Counter(), Counter(), Counter())
 
+        #creates the data of categories, sellers, products and customers 
         categories, leaves = factory.categories(epoch - timedelta(days=800))
         sellers = [
             factory.seller(seller_id, rng, epoch - timedelta(days=rng.randint(200, 800)))
@@ -107,12 +111,15 @@ class MarketplaceSimulator:
             )
             for _ in range(profile.customers)
         ]
+
+        #save the data in postgres and attributes in mongo
         self._insert(summary, "categories", categories)
         self._insert(summary, "sellers", sellers)
         self._insert(summary, "products", products)
         self._insert(summary, "product_attributes", attributes)
         self._insert(summary, "customers", customers)
 
+        #simulate the past order, mark them dilvered or shipped and inject bugs
         catalogue = Catalogue(customers, products)
         for day in range(1 - profile.history_days, 1):
             count = daily_order_count(profile.orders_per_day, config.day_start(day), rng)
@@ -122,7 +129,8 @@ class MarketplaceSimulator:
             self._place_orders(
                 day, count, as_of, rng, catalogue, summary, injector, with_gift_wrap=False
             )
-
+        
+        #saves the position of the last simulated day in sqlite ledger & return the summary to cli
         self._save_position(day=0)
         self._ledger.set_state("seed", str(config.seed))
         self._ledger.set_state("profile", profile.name)
@@ -142,27 +150,36 @@ class MarketplaceSimulator:
         day_start, day_end = config.day_start(day), config.day_end(day)
         summary = DaySummary(day, Counter(), Counter(), Counter())
 
+        # if today is marked as schema drift day, then apply schema drift add a gift_wrap column in orders & payments table
         if day == config.schema_drift_day:
             self._apply_schema_drift(day, summary)
         with_gift_wrap = self._ledger.get_state("drift_applied") == "1"
 
         customers = self._store.fetch("customers", _CUSTOMER_COLUMNS)
         products = self._store.fetch("products", _PRODUCT_COLUMNS)
+        #Simulates churn. A small percentage of customers move to a new city (updating their city, state, and pincode) or change their loyalty tier (e.g., upgraded from Silver to Gold).
         moves = self._change_customers(customers, rng, day_start, summary)
+        #Sellers adjust prices (discounts or price hikes) or retire old products (is_active = False).
         products = self._change_products(products, rng, day_start, summary)
+        #Simulates realistic platform growth. A small percentage of new customers join the platform today and are inserted into PostgreSQL.
         new_customers = [
             self._new_customer(factory, rng, random_moment(rng, day_start))
             for _ in range(max(1, round(len(customers) * _NEW_CUSTOMER_RATE)))
         ]
         self._insert(summary, "customers", new_customers)
 
+        # Intentionally introduces realistic defects
         injector = DefectInjector(config.seed, day, config.defect_rate)
+
+        #It finds orders placed in previous days that are still in transit and updates their status in PostgreSQL
         self._progress_open_orders(day_start, day_end, summary, injector)
 
         catalogue = Catalogue(customers + new_customers, products, moves)
+        #counts how many orders hapenned today
         count = daily_order_count(config.profile.orders_per_day, day_start, rng)
         self._place_orders(day, count, day_end, rng, catalogue, summary, injector, with_gift_wrap)
 
+        #bookmark and return 
         self._save_position(day)
         log.info(
             "generator_day_simulated",

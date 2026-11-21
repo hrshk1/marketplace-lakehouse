@@ -49,10 +49,12 @@ def _status(ctx: PipelineContext) -> PipelineStatus:
 
 
 def cmd_seed(args: argparse.Namespace, settings: Settings) -> None:
+    #adds generator configs, open Postgres and mongo connection and the sqlite ledger and calls simulator also resets the lakehouse 
     config = GeneratorConfig.from_settings(settings, PROFILES[args.profile])
     with PostgresMongoStore(settings) as store, Ledger(settings.ledger_path) as ledger:
         summary = MarketplaceSimulator(store, ledger, config).seed()
     reset_lakehouse(open_context(settings))
+    # the reset lakehouse wipes the dw schema and the lakehouse entirely
     print(f"Seeded day 0 ({config.start_date}): {dict(summary.inserted)}")
     print(f"Injected defects: {dict(summary.defects)}")
     print("Cleared the lakehouse and the dw schema, which held data from the previous sources.")
@@ -186,9 +188,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    #sets up log messages.
     configure_logging()
+    #reads what you typed and turns it into an args object.
     args = build_parser().parse_args()
+    #calls the function that matches your command, giving it the arguments and the settings (read from environment variables).
     args.handler(args, Settings.from_env())
+    #eg for seed it will call cmd_seed present above
 
 
 if __name__ == "__main__":
