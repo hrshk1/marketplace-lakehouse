@@ -18,7 +18,7 @@ Row = dict[str, Any]
 
 _SPARK_TO_POSTGRES_TYPE = {"boolean": "boolean"}
 
-
+#Any storage class that wants to work with MarketplaceSimulator MUST provide these 5 functions. Because of this protocol, MarketplaceSimulator doesn't care whether you save rows to a real PostgreSQL database, MongoDB, or a plain Python dictionary
 class SourceStore(Protocol):
     """The operations the simulator needs from the operational sources."""
 
@@ -43,7 +43,7 @@ class SourceStore(Protocol):
     def add_column(self, table: str, column: str, spark_type: str) -> None:
         """Add a nullable column to a table (the schema-drift event)."""
 
-
+# this we have kept for tests
 class MemoryStore:
     """Dictionary-backed store. Mirrors source behaviour closely enough for tests."""
 
@@ -84,7 +84,7 @@ class MemoryStore:
     def add_column(self, table: str, column: str, spark_type: str) -> None:
         self.columns[table][column] = spark_type
 
-
+#the real store
 class PostgresMongoStore:
     """Writes relational tables to PostgreSQL (`oltp` schema) and documents to MongoDB."""
 
