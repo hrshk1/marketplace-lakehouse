@@ -125,7 +125,9 @@ class MarketplaceSimulator:
             count = daily_order_count(profile.orders_per_day, config.day_start(day), rng)
             # Each history day gets its own defect stream, so the seed does not
             # damage the same relative positions on every day.
-            injector = DefectInjector(config.seed, day, config.defect_rate)
+            injector = DefectInjector(
+                config.seed, day, config.defect_rate, config.invalid_quantity_rate
+            )
             self._place_orders(
                 day, count, as_of, rng, catalogue, summary, injector, with_gift_wrap=False
             )
@@ -169,7 +171,9 @@ class MarketplaceSimulator:
         self._insert(summary, "customers", new_customers)
 
         # Intentionally introduces realistic defects
-        injector = DefectInjector(config.seed, day, config.defect_rate)
+        injector = DefectInjector(
+            config.seed, day, config.defect_rate, config.invalid_quantity_rate
+        )
 
         #It finds orders placed in previous days that are still in transit and updates their status in PostgreSQL
         self._progress_open_orders(day_start, day_end, summary, injector)
@@ -409,10 +413,12 @@ class MarketplaceSimulator:
                         as_of,
                     )
                 )
+        all_items = [item for items in items_by_order.values() for item in items]
         defects.extend(injector.corrupt_payments(payments))
+        # Healthy lines only: orphan and future-dated lines are already defects.
+        defects.extend(injector.corrupt_quantities(all_items))
         self._record(summary, defects)
 
-        all_items = [item for items in items_by_order.values() for item in items]
         self._insert(summary, "orders", orders + extra_orders)
         self._insert(summary, "order_items", all_items + extra_items)
         self._insert(summary, "payments", payments)

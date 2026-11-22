@@ -22,8 +22,10 @@ START = date(2026, 6, 30)
 DRIFT_DAY = 2
 
 
-def config(seed: int = 42, defect_rate: float = 0.02) -> GeneratorConfig:
-    return GeneratorConfig(seed, START, SMALL, defect_rate, DRIFT_DAY)
+def config(
+    seed: int = 42, defect_rate: float = 0.02, invalid_quantity_rate: float = 0.0
+) -> GeneratorConfig:
+    return GeneratorConfig(seed, START, SMALL, defect_rate, DRIFT_DAY, invalid_quantity_rate)
 
 
 def simulate(
@@ -209,3 +211,34 @@ def test_advance_requires_a_seeded_simulation(tmp_path):
 
     with pytest.raises(StateMismatchError, match="Run `seed` first"):
         simulator.advance(1)
+
+
+def test_invalid_quantity_is_off_by_default(tmp_path):
+    store, ledger, _ = simulate(tmp_path, "qty_off", (2,))
+
+    assert ledger.defects("invalid_quantity") == []
+    assert all(item["quantity"] > 0 for item in store.tables["order_items"].values())
+
+
+def test_invalid_quantity_is_recorded_and_present_in_the_source(tmp_path):
+    store, ledger, _ = simulate(tmp_path, "qty_on", (2,), invalid_quantity_rate=0.05)
+
+    recorded = ledger.defects("invalid_quantity")
+    assert recorded
+    items = store.tables["order_items"]
+    assert all(items[int(defect.record_key)]["quantity"] <= 0 for defect in recorded)
+
+
+def test_invalid_quantity_does_not_change_the_other_defects(tmp_path):
+    def other_defects(name: str, rate: float) -> list[str]:
+        _, ledger, _ = simulate(tmp_path, name, (2,), invalid_quantity_rate=rate)
+        return [str(d) for d in ledger.defects() if d.defect_type != "invalid_quantity"]
+
+    assert other_defects("others_off", 0.0) == other_defects("others_on", 0.05)
+
+
+def test_invalid_quantity_is_deterministic(tmp_path):
+    first = simulate(tmp_path, "qty_a", (2,), invalid_quantity_rate=0.05)
+    second = simulate(tmp_path, "qty_b", (2,), invalid_quantity_rate=0.05)
+
+    assert fingerprint(*first[:2]) == fingerprint(*second[:2])

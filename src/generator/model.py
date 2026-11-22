@@ -39,6 +39,7 @@ class GeneratorConfig:
     profile: Profile
     defect_rate: float
     schema_drift_day: int
+    invalid_quantity_rate: float = 0.0
 
     @classmethod
     def from_settings(cls, settings: Settings, profile: Profile) -> GeneratorConfig:
@@ -48,6 +49,7 @@ class GeneratorConfig:
             profile=profile,
             defect_rate=settings.defect_rate,
             schema_drift_day=settings.schema_drift_day,
+            invalid_quantity_rate=settings.invalid_quantity_rate,
         )
 
     def day_start(self, day: int) -> datetime:
