@@ -73,6 +73,7 @@ class Settings:
     metabase_url: str
     metabase_admin_email: str
     metabase_admin_password: str
+    invalid_quantity_rate: float  # 0 to 1: share of order lines given a bad quantity
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -115,6 +116,7 @@ class Settings:
             metabase_url=_env("METABASE_URL", "http://localhost:3000"),
             metabase_admin_email=_env("METABASE_ADMIN_EMAIL", "admin@marketplace.local"),
             metabase_admin_password=_env("METABASE_ADMIN_PASSWORD", ""),
+            invalid_quantity_rate=float(_env("INVALID_QUANTITY_RATE", "0")),
         )
 
     @property
