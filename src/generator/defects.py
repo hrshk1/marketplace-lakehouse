@@ -25,15 +25,23 @@ _LATE_SAFETY_MARGIN = timedelta(minutes=55)
 class DefectInjector:
     """Injects the defects for one simulated day."""
 
-    def __init__(self, seed: int, day: int, rate: float) -> None:
+    def __init__(
+        self, seed: int, day: int, rate: float, invalid_quantity_rate: float = 0.0
+    ) -> None:
         self._rng = random.Random(f"{seed}:defects:{day}")
+        # Its own stream, so switching this defect on never changes which rows
+        # the older defects pick.
+        self._quantity_rng = random.Random(f"{seed}:defects:{day}:invalid_quantity")
         self._day = max(day, 0)
         self._rate = rate
+        self._invalid_quantity_rate = invalid_quantity_rate
 
-    def _count(self, population: int) -> int:
-        if self._rate <= 0 or population == 0:
+    def _count(self, population: int, rate: float | None = None) -> int:
+        """How many of `population` rows to damage; `rate` defaults to the main defect rate."""
+        rate = self._rate if rate is None else rate
+        if rate <= 0 or population == 0:
             return 0
-        return min(population, max(1, round(self._rate * population)))
+        return min(population, max(1, round(rate * population)))
 
     def _defect(self, defect_type: str, table: str, key: object, detail: str) -> Defect:
         return Defect(self._day, defect_type, table, str(key), detail)
@@ -164,6 +172,27 @@ class DefectInjector:
                     "orders",
                     update["order_id"],
                     f"status {update['order_status']} stamped {late_at.isoformat()}",
+                )
+            )
+        return defects
+
+    def corrupt_quantities(self, items: list[Row]) -> list[Defect]:
+        """Set the quantity of some order lines to zero or to a negative value.
+
+        Does nothing (and draws no random numbers) while the rate is 0.
+        """
+        count = self._count(len(items), self._invalid_quantity_rate)
+        if count == 0:
+            return []
+        defects = []
+        for item in self._quantity_rng.sample(items, count):
+            item["quantity"] = 0 if self._quantity_rng.random() < 0.3 else -item["quantity"]
+            defects.append(
+                self._defect(
+                    "invalid_quantity",
+                    "order_items",
+                    item["order_item_id"],
+                    f"quantity {item['quantity']}",
                 )
             )
         return defects
