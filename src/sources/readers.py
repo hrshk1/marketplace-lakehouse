@@ -31,7 +31,7 @@ class SourceTable:
     system: str
     primary_key: str
 
-
+# all the source table and their system and primary key are hardcoded here
 SOURCE_TABLES: tuple[SourceTable, ...] = (
     SourceTable("categories", POSTGRES, "category_id"),
     SourceTable("sellers", POSTGRES, "seller_id"),
@@ -62,13 +62,13 @@ class SourceReader(Protocol):
     def count_window(self, table: SourceTable, start: datetime | None, end: datetime) -> int:
         """Count the rows of the same window with a separate query, for reconciliation."""
 
-
+#When converting Python dictionaries to JSON, timestamps can't normally be converted by default. This helper turns any datetime into a clean standard ISO string (e.g., 2026-11-23T14:00:00Z).
 def _json_default(value: object) -> str:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
     return str(value)
 
-
+#Takes MongoDB documents and converts them into standardized 4-part tuples matching DOCUMENT_SCHEMA.
 def documents_to_rows(documents: Iterable[Mapping[str, Any]]) -> list[tuple]:
     """Turn source documents into (doc_id, raw JSON, created_at, updated_at) rows."""
     return [
@@ -81,11 +81,11 @@ def documents_to_rows(documents: Iterable[Mapping[str, Any]]) -> list[tuple]:
         for document in documents
     ]
 
-
+#A helper checking if a timestamp falls within [start, end). If start is None, it matches everything up to end.
 def _in_window(value: datetime, start: datetime | None, end: datetime) -> bool:
     return (start is None or value >= start) and value < end
 
-
+#The production reader that talks to real PostgreSQL and MongoDB databases.
 class PostgresMongoReader:
     """Reads PostgreSQL tables over JDBC and MongoDB collections with pymongo."""
 
@@ -94,41 +94,43 @@ class PostgresMongoReader:
         self._settings = settings
 
     def read_window(self, table: SourceTable, start: datetime | None, end: datetime) -> DataFrame:
+        #Connects to MongoDB with pymongo
         if table.system == MONGODB:
             with self._mongo() as client:
                 documents = client[self._settings.mongo_db][table.name].find(
-                    {WATERMARK_COLUMN: self._mongo_filter(start, end)}
+                    {WATERMARK_COLUMN: self._mongo_filter(start, end)} #Queries the collection for documents whose updated_at matches the time window.
                 )
-                rows = documents_to_rows(documents)
-            return self._spark.createDataFrame(rows, schema=DOCUMENT_SCHEMA)
+                rows = documents_to_rows(documents) #Converts the raw MongoDB documents into standardized 4-part tuples (id, JSON payload, created_at, updated_at).
+            return self._spark.createDataFrame(rows, schema=DOCUMENT_SCHEMA) #Creates a Spark DataFrame from the extracted rows with the defined schema.
         return self._jdbc(f"SELECT * FROM oltp.{table.name} WHERE {self._sql_filter(start, end)}")
-
+    #Fast row-count verification directly at the source
     def count_window(self, table: SourceTable, start: datetime | None, end: datetime) -> int:
         if table.system == MONGODB:
             with self._mongo() as client:
                 return client[self._settings.mongo_db][table.name].count_documents(
-                    {WATERMARK_COLUMN: self._mongo_filter(start, end)}
+                    {WATERMARK_COLUMN: self._mongo_filter(start, end)} #same filter as read_window but on MongoDB's count_documents
                 )
-        query = f"SELECT count(*) AS n FROM oltp.{table.name} WHERE {self._sql_filter(start, end)}"
+        query = f"SELECT count(*) AS n FROM oltp.{table.name} WHERE {self._sql_filter(start, end)}" #SQL count query with the same time filter
         return self._jdbc(query).collect()[0]["n"]
-
+    #Creates a MongoDB client using the configured connection URI and enables timezone awareness.
     def _mongo(self) -> MongoClient:
         return MongoClient(self._settings.mongo_uri, tz_aware=True)
 
+    #Builds a MongoDB query dictionary
     @staticmethod
     def _mongo_filter(start: datetime | None, end: datetime) -> dict[str, datetime]:
         bounds = {"$lt": end}
         if start is not None:
             bounds["$gte"] = start
         return bounds
-
+    #Builds a PostgreSQL WHERE clause string, e.g. updated_at < TIMESTAMPTZ '...' AND updated_at >= TIMESTAMPTZ '...'.
     @staticmethod
     def _sql_filter(start: datetime | None, end: datetime) -> str:
         clauses = [f"{WATERMARK_COLUMN} < TIMESTAMPTZ '{end.isoformat()}'"]
         if start is not None:
             clauses.append(f"{WATERMARK_COLUMN} >= TIMESTAMPTZ '{start.isoformat()}'")
         return " AND ".join(clauses)
-
+    #Instructs Spark to connect to PostgreSQL over JDBC. It tunes network performance by pulling data in chunks of 10,000 rows (fetchsize: 10000) and executes the pushdown SQL query
     def _jdbc(self, query: str) -> DataFrame:
         return (
             self._spark.read.format("jdbc")
@@ -141,7 +143,7 @@ class PostgresMongoReader:
             .load()
         )
 
-
+#MemoryReader (For Fast Testing)
 class MemoryReader:
     """Reads from the generator's in-memory store; used by container-free tests."""
 
@@ -169,3 +171,8 @@ class MemoryReader:
             for row in self._store.tables[table.name].values()
             if _in_window(row[WATERMARK_COLUMN], start, end)
         )
+# Why this exists: In automated tests (CI/CD), spinning up real Docker containers for PostgreSQL and MongoDB can be slow and brittle.
+# MemoryReader fulfills the exact same SourceReader protocol, but instead of making network calls, it reads from an in-memory dictionary (self._store.tables).
+# Lines 153–156: Filters in-memory dictionary rows matching the time window.
+# Lines 158–164: Converts the filtered rows into a Spark DataFrame (using DOCUMENT_SCHEMA for MongoDB, or dynamically generated schemas for relational tables).
+# Lines 166–171: Directly calculates the row count in Python memory.

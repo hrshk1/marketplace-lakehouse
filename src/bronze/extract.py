@@ -45,15 +45,17 @@ def extract_table(
     never duplicates data. Bronze tables are partitioned by `_batch_id`, which
     makes that replacement a whole-partition swap in a single Iceberg commit.
     """
-    checkpoints.ensure_table(spark)
-    schema_evolution.ensure_table(spark)
-    target = bronze_table(table.name)
+    checkpoints.ensure_table(spark) #Verifies that the internal checkpoint tracking table exists in Spark; creates it if missing.
+    schema_evolution.ensure_table(spark) #Verifies that the schema history/audit table exists; creates it if missing.
+    target = bronze_table(table.name) #Sets target to the full table name (e.g., "bronze.orders")
+
+    #Determines the exact time range of data to fetch
     window = checkpoints.resolve_window(
         checkpoints.previous_high_watermark(spark, table.name, batch.batch_id),
         batch.high_watermark,
         lookback,
     )
-
+    #Reading Data & Adding Audit Metadata
     incoming = (
         reader.read_window(table, window.read_from, window.high_watermark)
         .withColumn("_batch_id", F.lit(batch.batch_id))
@@ -61,13 +63,13 @@ def extract_table(
         .withColumn("_source_system", F.lit(table.system))
         .withColumn("_extract_watermark", F.lit(window.high_watermark))
     )
-
+    #If the destination Bronze table does not exist yet (first run), it creates the Iceberg table using the schema of incoming and partitions it by _batch_id.
     if not table_exists(spark, target):
         create_table(incoming, target, F.col("_batch_id"))
     else:
-        diff = diff_schemas(spark.table(target).schema, incoming.schema)
+        diff = diff_schemas(spark.table(target).schema, incoming.schema) # compares the existing bronze table schema with the new incoming data schema
         try:
-            apply_schema_changes(spark, target, diff, batch.batch_id)
+            apply_schema_changes(spark, target, diff, batch.batch_id) # Applies schema diff by ADDING columns or UPGRADING types (drops are rejected).
         except SchemaDriftError as error:
             checkpoints.record(
                 spark, table.name, batch, window, checkpoints.QUARANTINED, message=str(error)
@@ -77,10 +79,10 @@ def extract_table(
                 extra={"table": table.name, "batch_id": batch.batch_id, "reason": str(error)},
             )
             raise
-
-    incoming.writeTo(target).overwrite(F.col("_batch_id") == batch.batch_id)
-
-    rows_extracted = spark.table(target).where(F.col("_batch_id") == batch.batch_id).count()
+            
+    incoming.writeTo(target).overwrite(F.col("_batch_id") == batch.batch_id) # writing the data idempotently 
+    # below i a counting the rows and comitting the checkpoints
+    rows_extracted = spark.table(target).where(F.col("_batch_id") == batch.batch_id).count() 
     source_row_count = reader.count_window(table, window.read_from, window.high_watermark)
     checkpoints.record(
         spark,
@@ -91,6 +93,7 @@ def extract_table(
         rows_extracted=rows_extracted,
         source_row_count=source_row_count,
     )
+    #logging and returning the summary
     log.info(
         "bronze_extract_committed",
         extra={
